@@ -46,12 +46,15 @@ def deploy(topo):
                         hex_mac[10:12]])
         switch = net.addSwitch(name, dpid=mac)
         if node_info["type"] == "ext":
-            base = as_ip_pool.get(node_info["as"], 1)
-            as_ip_pool[node_info["as"]] = base + 1
+            base = as_ip_pool.get(node_info["as"], 0)
+            assert(base + 4 < 255)
+            as_ip_pool[node_info["as"]] = base + 4
             host = net.addHost('h%d' % node_info["id"],
-                               ip="172.18.%d.%d/24" % (node_info["as"], base))
+                               ip="172.19.%d.%d/30" % (node_info["as"], base+1),
+                               defaultRoute="h%d-eth0" % node_info["id"])
             link = net.addLink(host, switch)
             ext_switches.add(node_info["id"])
+            link.intf2.setIP("172.19.%d.%d/30" % (node_info["as"], base+2))
         switches[node_info["id"]] = switch
 
     info("*** Creating links\n")
@@ -72,17 +75,20 @@ def deploy(topo):
             as2 = as_map[link_info["dst"]]
             as1, as2 = min(as1, as2), max(as1, as2)
             base = inter_as_ip_pool.get((as1, as2), 0)
+            assert(base + 4 < 255)
             inter_as_ip_pool[(as1, as2)] = base + 4
             link.intf1.setIP("10.%d.%d.%d/30" % (as1, as2, base+1))
             link.intf2.setIP("10.%d.%d.%d/30" % (as1, as2, base+2))
         elif link_info["src"] in ext_switches:
             as1 = as_map[link_info["src"]]
             base = as_ip_pool.get(as1, 1)
+            assert(base < 255)
             as_ip_pool[as1] = base + 1
             link.intf1.setIP("172.18.%d.%d/24" % (as1, base))
         elif link_info["dst"] in ext_switches:
             as2 = as_map[link_info["dst"]]
             base = as_ip_pool.get(as2, 1)
+            assert(base < 255)
             as_ip_pool[as2] = base + 1
             link.intf2.setIP("172.18.%d.%d/24" % (as2, base))
 

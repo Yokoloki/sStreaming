@@ -4,7 +4,7 @@
         "Gen-time": "2014-11-07 10:20",
         "Node-count": 3,
         "Link-count": 2,
-        "As-count": 1
+        "As-count": 3
     },
     "defaults": {
         "link": {
@@ -17,8 +17,8 @@
     },
     "nodes": [
         {"id": 1, "type": "ext", "as": 1},
-        {"id": 2, "type": "ext", "as": 1},
-        {"id": 3, "type": "ext", "as": 1}
+        {"id": 2, "type": "ext", "as": 2},
+        {"id": 3, "type": "ext", "as": 3}
     ],
     "links": [
         {"src": 1, "dst": 2},
