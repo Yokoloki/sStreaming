@@ -1,0 +1,61 @@
+{
+    "summary": {
+        "Description": "Just a demo network",
+        "Gen-time": "2014-11-07 10:20",
+        "Node-count": 16,
+        "Link-count": 23,
+        "As-count": 3
+    },
+    "defaults": {
+        "link": {
+            "bw": 10,
+            "delay": "5ms",
+            "jitter": "2ms",
+            "loss": 1,
+            "max_queue_size": 800
+        }
+    },
+    "nodes": [
+        {"id": 1, "type": "ext", "as": 1},
+        {"id": 2, "type": "inn", "as": 1},
+        {"id": 3, "type": "inn", "as": 1},
+        {"id": 4, "type": "ext", "as": 1},
+        {"id": 5, "type": "inn", "as": 1},
+        {"id": 6, "type": "inn", "as": 1},
+        {"id": 7, "type": "ext", "as": 2},
+        {"id": 8, "type": "inn", "as": 2},
+        {"id": 9, "type": "inn", "as": 2},
+        {"id": 10, "type": "inn", "as": 2},
+        {"id": 11, "type": "ext", "as": 2},
+        {"id": 12, "type": "ext", "as": 3},
+        {"id": 13, "type": "inn", "as": 3},
+        {"id": 14, "type": "ext", "as": 3},
+        {"id": 15, "type": "inn", "as": 3},
+        {"id": 16, "type": "ext", "as": 3}
+    ],
+    "links": [
+        {"src": 1, "dst": 2},
+        {"src": 1, "dst": 3},
+        {"src": 1, "dst": 5},
+        {"src": 1, "dst": 7},
+        {"src": 2, "dst": 3},
+        {"src": 3, "dst": 4},
+        {"src": 4, "dst": 5},
+        {"src": 4, "dst": 6},
+        {"src": 4, "dst": 16},
+        {"src": 5, "dst": 6},
+        {"src": 7, "dst": 8},
+        {"src": 7, "dst": 9},
+        {"src": 7, "dst": 10},
+        {"src": 8, "dst": 11},
+        {"src": 9, "dst": 11},
+        {"src": 10, "dst": 11},
+        {"src": 11, "dst": 12},
+        {"src": 12, "dst": 13},
+        {"src": 12, "dst": 16},
+        {"src": 13, "dst": 14},
+        {"src": 14, "dst": 15},
+        {"src": 14, "dst": 16},
+        {"src": 15, "dst": 16}
+    ]
+}
