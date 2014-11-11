@@ -1,5 +1,7 @@
 import argparse
 import json
+import pymongo
+
 from mininet.net import Mininet
 from mininet.link import TCLink
 from mininet.node import RemoteController
@@ -22,6 +24,10 @@ def deploy(topo):
     info("Link-count:  %s\n" % topo["summary"]["Link-count"])
     info("AS-count:    %s\n" % topo["summary"]["As-count"])
 
+    conn = pymongo.Connection("localhost")
+    conn.drop_database('sStreaming')
+    db = conn['sStreaming']
+
     net = Mininet(controller=RemoteController)
     c0 = net.addController('c0')
 
@@ -34,10 +40,7 @@ def deploy(topo):
     for node_info in topo["nodes"]:
         name = "s%d" % node_info["id"]
         as_map[node_info["id"]] = node_info["as"]
-        if node_info["type"] == "ext":
-            hex_mac = "F%011x" % node_info["id"]
-        else:
-            hex_mac = "0%011x" % node_info["id"]
+        hex_mac = "%012x" % node_info["id"]
         mac = ':'.join([hex_mac[0:2],
                         hex_mac[2:4],
                         hex_mac[4:6],
@@ -55,7 +58,13 @@ def deploy(topo):
             link = net.addLink(host, switch)
             ext_switches.add(node_info["id"])
             link.intf2.setIP("172.19.%d.%d/30" % (node_info["as"], base+2))
+            db.Port.insert({"name": str(link.intf2),
+                            "dpid": node_info["id"],
+                            "ip": "172.19.%d.%d/30" % (node_info["as"], base+2)})
         switches[node_info["id"]] = switch
+        db.Switch.insert({"dpid": node_info["id"],
+                          "as": node_info["as"],
+                          "type": node_info["type"]})
 
     info("*** Creating links\n")
     for link_info in topo["links"]:
@@ -69,6 +78,12 @@ def deploy(topo):
                         switches[link_info["dst"]],
                         cls=TCLink,
                         **link_info["args"])
+        src_bson = {"name": str(link.intf1),
+                    "dpid": link_info["src"],
+                    "adj": str(link.intf2)}
+        dst_bson = {"name": str(link.intf2),
+                    "dpid": link_info["dst"],
+                    "adj": str(link.intf1)}
         if (link_info["src"] in ext_switches) \
                 and (link_info["dst"] in ext_switches):
             as1 = as_map[link_info["src"]]
@@ -79,18 +94,26 @@ def deploy(topo):
             inter_as_ip_pool[(as1, as2)] = base + 4
             link.intf1.setIP("10.%d.%d.%d/30" % (as1, as2, base+1))
             link.intf2.setIP("10.%d.%d.%d/30" % (as1, as2, base+2))
+            src_bson["ip"] = "10.%d.%d.%d/30" % (as1, as2, base+1)
+            dst_bson["ip"] = "10.%d.%d.%d/30" % (as1, as2, base+2)
         elif link_info["src"] in ext_switches:
             as1 = as_map[link_info["src"]]
             base = as_ip_pool.get(as1, 1)
             assert(base < 255)
             as_ip_pool[as1] = base + 1
             link.intf1.setIP("172.18.%d.%d/24" % (as1, base))
+            src_bson["ip"] = "172.18.%d.%d/24" % (as1, base)
         elif link_info["dst"] in ext_switches:
             as2 = as_map[link_info["dst"]]
             base = as_ip_pool.get(as2, 1)
             assert(base < 255)
             as_ip_pool[as2] = base + 1
             link.intf2.setIP("172.18.%d.%d/24" % (as2, base))
+            dst_bson["ip"] = "172.18.%d.%d/24" % (as2, base)
+        db.Port.insert(src_bson)
+        db.Port.insert(dst_bson)
+
+    conn.close()
 
     info("*** Starting network\n")
     net.start()
