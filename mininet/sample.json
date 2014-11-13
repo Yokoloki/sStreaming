@@ -11,7 +11,7 @@
             "bw": 10,
             "delay": "5ms",
             "jitter": "2ms",
-            "loss": 1,
+            "loss": 0,
             "max_queue_size": 800
         }
     },

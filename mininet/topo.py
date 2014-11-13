@@ -1,6 +1,8 @@
 import argparse
 import json
 import pymongo
+import re
+import random
 
 from mininet.net import Mininet
 from mininet.link import TCLink
@@ -17,6 +19,9 @@ def genNet(args):
     print "Generator Mode has not been implemented yet."
     exit(1)
 
+def getPortNo(intf):
+    return int(re.match("s(\d+)-eth(\d+)", str(intf)).group(2))
+
 def deploy(topo):
     info("Description: %s\n" % topo["summary"]["Description"])
     info("Gen-time:    %s\n" % topo["summary"]["Gen-time"])
@@ -24,9 +29,10 @@ def deploy(topo):
     info("Link-count:  %s\n" % topo["summary"]["Link-count"])
     info("AS-count:    %s\n" % topo["summary"]["As-count"])
 
-    conn = pymongo.Connection("localhost")
-    conn.drop_database('sStreaming')
-    db = conn['sStreaming']
+    conn = pymongo.Connection("127.0.0.1")
+    conn.drop_database("sStreaming")
+    db = conn["sStreaming"]
+    db.Version.insert({"Version": random.randint(1, 2**32)})
 
     net = Mininet(controller=RemoteController)
     c0 = net.addController('c0')
@@ -54,14 +60,16 @@ def deploy(topo):
             as_ip_pool[node_info["as"]] = base + 4
             host_ip = "172.19.%d.%d/30" % (node_info["as"], base+1)
             switch_ip = "172.19.%d.%d/30" % (node_info["as"], base+2)
+            route = "dev h%d-eth0 via %s" % (node_info["id"], switch_ip.split("/")[0])
             host = net.addHost('h%d' % node_info["id"],
                                ip=host_ip,
-                               defaultRoute="h%d-eth0" % node_info["id"])
+                               defaultRoute=route)
             link = net.addLink(host, switch)
             ext_switches.add(node_info["id"])
             link.intf2.setIP(switch_ip)
-            db.Port.insert({"name": str(link.intf2),
-                            "dpid": node_info["id"],
+            db.Port.insert({"dpid": node_info["id"],
+                            "port": getPortNo(link.intf2),
+                            "mac": link.intf2.MAC(),
                             "ip": switch_ip})
             db.ARP.insert({"ip": host_ip, "mac": link.intf1.MAC()})
             db.ARP.insert({"ip": switch_ip, "mac": link.intf2.MAC()})
@@ -82,22 +90,33 @@ def deploy(topo):
                         switches[link_info["dst"]],
                         cls=TCLink,
                         **link_info["args"])
-        src_bson = {"name": str(link.intf1),
-                    "dpid": link_info["src"],
-                    "adj": str(link.intf2)}
-        dst_bson = {"name": str(link.intf2),
-                    "dpid": link_info["dst"],
-                    "adj": str(link.intf1)}
+        src_bson = {"dpid": link_info["src"],
+                    "port": getPortNo(link.intf1),
+                    "mac": link.intf1.MAC(),
+                    "adj-dpid": link_info["dst"],
+                    "adj-port": getPortNo(link.intf2)}
+        dst_bson = {"dpid": link_info["dst"],
+                    "port": getPortNo(link.intf2),
+                    "mac": link.intf2.MAC(),
+                    "adj-dpid": link_info["src"],
+                    "adj-port": getPortNo(link.intf1)}
         if (link_info["src"] in ext_switches) \
                 and (link_info["dst"] in ext_switches):
             as1 = as_map[link_info["src"]]
             as2 = as_map[link_info["dst"]]
-            as1, as2 = min(as1, as2), max(as1, as2)
-            base = inter_as_ip_pool.get((as1, as2), 0)
-            assert(base + 4 < 255)
-            inter_as_ip_pool[(as1, as2)] = base + 4
-            switch_ip1 = "10.%d.%d.%d/30" % (as1, as2, base+1)
-            switch_ip2 = "10.%d.%d.%d/30" % (as1, as2, base+2)
+            if as1 == as2:
+                base = as_ip_pool.get(as1, 1)
+                assert(base + 1 < 255)
+                as_ip_pool[as1] = base + 2
+                switch_ip1 = "172.18.%d.%d/24" % (as1, base)
+                switch_ip2 = "172.18.%d.%d/24" % (as1, base+1)
+            else:
+                as1, as2 = min(as1, as2), max(as1, as2)
+                base = inter_as_ip_pool.get((as1, as2), 0)
+                assert(base + 4 < 255)
+                inter_as_ip_pool[(as1, as2)] = base + 4
+                switch_ip1 = "10.%d.%d.%d/30" % (as1, as2, base+1)
+                switch_ip2 = "10.%d.%d.%d/30" % (as1, as2, base+2)
             link.intf1.setIP(switch_ip1)
             link.intf2.setIP(switch_ip2)
             src_bson["ip"] = switch_ip1
