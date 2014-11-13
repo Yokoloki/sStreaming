@@ -37,8 +37,7 @@ class ARPProxy(app_manager.RyuApp):
         self.arp_table = {}
         arp_entries = self.db.ARP.find()
         for entry in arp_entries:
-            ip, prefixlen = entry["ip"].split("/")
-            self.arp_table[ip] = entry["mac"]
+            self.arp_table[entry["ip"]] = entry["mac"]
 
 
     @set_ev_cls(EventPacketIn, MAIN_DISPATCHER)

@@ -13,6 +13,7 @@ from arp_proxy import EventReload as Event_ARPProxy_Reload
 from l2_forwarding import L2Forwarding
 from l2_forwarding import EventPacketIn as Event_L2Forwarding_PacketIn
 from l2_forwarding import EventReload as Event_L2Forwarding_Reload
+from l2_forwarding import EventRegDp as Event_L2Forwarding_RegDp
 #from l3_forwarding import EventPacketIn as Event_L3Forwarding_PacketIn
 #from l3_forwarding import EventReload as Event_L3Forwarding_Reload
 #from streaming import EventPacketIn as Event_Streaming_PacketIn
@@ -25,7 +26,7 @@ class Wrapper(app_manager.RyuApp):
     OFP_VERSIONS = [ofproto_v1_3.OFP_VERSION]
     _CONTEXTS = {"ARPProxy": ARPProxy, "L2Forwarding": L2Forwarding}
     _EVENTS = [Event_ARPProxy_PacketIn, Event_ARPProxy_Reload,
-               Event_L2Forwarding_PacketIn, Event_L2Forwarding_Reload]
+               Event_L2Forwarding_PacketIn, Event_L2Forwarding_Reload, Event_L2Forwarding_RegDp]
 
     def __init__(self, *args, **kwargs):
         super(Wrapper, self).__init__(*args, **kwargs)
@@ -34,20 +35,24 @@ class Wrapper(app_manager.RyuApp):
         self.version = 0
         self.conn = pymongo.Connection("127.0.0.1")
         self.db = self.conn["sStreaming"]
+        self._l2_forwarding = kwargs["L2Forwarding"]
 
     def reload(self):
         self.version = self.db.Version.find_one()["Version"]
         del self.switches
         self.switches = {}
-        switches = self.db.Switch.find()
-        for sw in switches:
-            self.switches[sw["dpid"]] = {
-                    "type": sw["type"],
-                    "as": sw["as"],
+        nodes = self.db.Node.find()
+        for node in nodes:
+            if node["type"]=="host": continue
+            self.switches[node["dpid"]] = {
+                    "name": node["name"],
+                    "type": node["type"],
+                    "as": node["as"],
                     "mac": {}}
-        ports = self.db.Port.find()
-        for port in ports:
-            self.switches[port["dpid"]]["mac"][port["port"]] = port["mac"]
+        intfs = self.db.Intf.find()
+        for intf in intfs:
+            if "dpid" not in intf: continue
+            self.switches[intf["dpid"]]["mac"][intf["port_no"]] = intf["mac"]
         self.send_event_to_observers(Event_ARPProxy_Reload())
         self.send_event_to_observers(Event_L2Forwarding_Reload())
         #self.send_event_to_observers(Event_L3Forwarding_Reload())
@@ -66,12 +71,12 @@ class Wrapper(app_manager.RyuApp):
         ofproto = datapath.ofproto
         parser = datapath.ofproto_parser
 
-        #self._l2_forwarding.reg_dp(datapath)
         # table-miss flow entry
         match = parser.OFPMatch()
         actions = [parser.OFPActionOutput(ofproto.OFPP_CONTROLLER,
                                           ofproto.OFPCML_NO_BUFFER)]
         self.add_flow(datapath, 0, match, actions)
+        self.send_event_to_observers(Event_L2Forwarding_RegDp(datapath))
 
     def add_flow(self, datapath, priority, match, actions):
         ofproto = datapath.ofproto

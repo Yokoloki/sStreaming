@@ -18,6 +18,10 @@ class EventReload(event.EventBase):
     def __init__(self):
         super(EventReload, self).__init__()
 
+class EventRegDp(event.EventBase):
+    def __init__(self, datapath):
+        super(EventRegDp, self).__init__()
+        self.datapath = datapath
 
 class L2Forwarding(app_manager.RyuApp):
     OFP_VERSIONS = [ofproto_v1_3.OFP_VERSION]
@@ -29,10 +33,19 @@ class L2Forwarding(app_manager.RyuApp):
         self.conn = pymongo.Connection("127.0.0.1")
         self.db = self.conn["sStreaming"]
         self.logger.debug("L2Forwarding: init")
+        #dpid -> datapath
         self.dps = {}
+        #as -> nx.graph
         self.graphs = {}
+        #name -> as
         self.as_map = {}
+        #dpid -> name
+        self.name_map = {}
+        #name -> dpid
+        self.dpid_map = {}
+        #mac -> name
         self.mac_map = {}
+        #(name1, name2) -> out_port
         self.port_map = {}
 
     @set_ev_cls(EventReload, CONFIG_DISPATCHER)
@@ -41,31 +54,41 @@ class L2Forwarding(app_manager.RyuApp):
         del self.dps
         del self.graphs
         del self.as_map
+        del self.name_map
+        del self.dpid_map
         del self.mac_map
         del self.port_map
 
         self.dps = {}
         self.graphs = {}
         self.as_map = {}
+        self.name_map = {}
+        self.dpid_map = {}
         self.mac_map = {}
         self.port_map = {}
 
-        switches = self.db.Switch.find()
-        for sw in switches:
-            graph = self.graphs.setdefault(sw["as"], nx.Graph())
-            graph.add_node(sw["dpid"])
-            self.as_map[sw["dpid"]] = sw["as"]
-        ports = self.db.Port.find()
-        for port in ports:
-            self.mac_map[port["mac"]] = port["dpid"]
-            if "adj-dpid" in port:
-                dpid1 = port["dpid"]
-                dpid2 = port["adj-dpid"]
-                as1 = self.as_map[dpid1]
-                as2 = self.as_map[dpid2]
-                if as1 == as2:
-                    self.graphs[as1].add_edge(dpid1, dpid2)
-                    self.port_map[(dpid1, dpid2)] = port["port"]
+        nodes = self.db.Node.find()
+        for node in nodes:
+            graph = self.graphs.setdefault(node["as"], nx.Graph())
+            graph.add_node(node["name"])
+            if "dpid" in node:
+                self.dpid_map[node["name"]] = node["dpid"]
+                self.name_map[node["dpid"]] = node["name"]
+            self.as_map[node["name"]] = node["as"]
+        intfs = self.db.Intf.find()
+        for intf in intfs:
+            self.mac_map[intf["mac"]] = intf["node"]
+
+        links = self.db.Link.find()
+        for link in links:
+            src_name = link["src_name"]
+            dst_name = link["dst_name"]
+            src_as = self.as_map[src_name]
+            dst_as = self.as_map[dst_name]
+            if src_as == dst_as:
+                self.graphs[src_as].add_edge(src_name, dst_name)
+                self.port_map[(src_name, dst_name)] = link["src_port"]
+                self.port_map[(dst_name, src_name)] = link["dst_port"]
 
     @set_ev_cls(EventPacketIn, MAIN_DISPATCHER)
     def _l2_forwarding_handler(self, ev):
@@ -76,27 +99,29 @@ class L2Forwarding(app_manager.RyuApp):
         datapath = msg.datapath
         ofproto = datapath.ofproto
         parser = datapath.ofproto_parser
+        in_port = msg.match["in_port"]
 
         dpid = datapath.id
-        eth_dst = decoded_pkt['ethernet'].dst
+        eth_dst = decoded_pkt["ethernet"].dst
 
         if eth_dst not in self.mac_map:
             self.logger.info("L2Forwarding: dst %s not in mac_map" % eth_dst)
             return False
 
-        dst_dpid = self.mac_map[eth_dst]
-        as1 = self.as_map[dpid]
-        as2 = self.as_map[dst_dpid]
+        src_name = self.name_map[dpid]
+        dst_name = self.mac_map[eth_dst]
+        as1 = self.as_map[src_name]
+        as2 = self.as_map[dst_name]
         if as1 != as2:
             self.logger.info("L2Forwarding: dst %s is not in the same AS as dp%s" %
                     (eth_dst, dpid))
             return False
         graph = self.graphs[as1]
-        path = graph.shortest_path(source=dpid, target=dst_dpid)
+        path = nx.shortest_path(graph, source=src_name, target=dst_name)
         assert(len(path) > 1)
         for i in xrange(len(path)-1):
             out_port = self.port_map[(path[i], path[i+1])]
-            self.add_l2_flow(dpid, eth_dst, out_port)
+            self.add_l2_flow(self.dpid_map[path[i]], eth_dst, out_port)
 
         data = None
         if msg.buffer_id == ofproto.OFP_NO_BUFFER:
@@ -108,8 +133,12 @@ class L2Forwarding(app_manager.RyuApp):
                                   actions=actions,
                                   data=data)
         datapath.send_msg(out)
-        self.logger.debug("ARPProxy: %s - %s" % (dst_ip, dst_mac))
         return True
+
+    @set_ev_cls(EventRegDp, CONFIG_DISPATCHER)
+    def _regdp_handler(self, ev):
+        datapath = ev.datapath
+        self.dps[datapath.id] = datapath
 
     def add_l2_flow(self, dpid, eth_dst, out_port):
         datapath = self.dps[dpid]
@@ -124,5 +153,3 @@ class L2Forwarding(app_manager.RyuApp):
                                 match=match, instructions=inst)
         datapath.send_msg(mod)
 
-    def reg_dp(self, datapath):
-        self.dps[datapath.id] = datapath

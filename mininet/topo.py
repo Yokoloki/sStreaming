@@ -6,7 +6,7 @@ import random
 
 from mininet.net import Mininet
 from mininet.link import TCLink
-from mininet.node import RemoteController
+from mininet.node import RemoteController, Switch
 from mininet.cli import CLI
 from mininet.log import setLogLevel, info
 
@@ -20,7 +20,59 @@ def genNet(args):
     exit(1)
 
 def getPortNo(intf):
-    return int(re.match("s(\d+)-eth(\d+)", str(intf)).group(2))
+    return int(re.match("[s|h](\d+)-eth(\d+)", str(intf)).group(2))
+
+def exportToDB(net, as_map):
+    conn = pymongo.Connection("127.0.0.1")
+    conn.drop_database("sStreaming")
+    db = conn["sStreaming"]
+    db.Version.insert({"Version": random.randint(1, 2**32)})
+
+    for host in net.hosts:
+        name = str(host)
+        as_ = as_map[name]
+        db.Node.insert({"name": name,
+                        "type": "host",
+                        "as": as_})
+        for port_no in host.intfs.keys():
+            intf = host.intfs[port_no]
+            intf_info = {"node": name,
+                         "port_no": port_no,
+                         "mac": intf.mac}
+            if intf.ip != None:
+                intf_info["ip"] = intf.ip
+                intf_info["prefixLen"] = intf.prefixLen
+                db.ARP.insert({"ip": intf.ip, "mac": intf.mac})
+            db.Intf.insert(intf_info)
+    for switch in net.switches:
+        name = str(switch)
+        as_ = as_map[name]
+        db.Node.insert({"name": name,
+                        "type": "inn",
+                        "as": as_,
+                        "dpid": int(switch.dpid)})
+        for port_no in switch.intfs.keys():
+            intf = switch.intfs[port_no]
+            intf_info = {"node": name,
+                         "dpid": int(switch.dpid),
+                         "port_no": port_no,
+                         "mac": intf.mac}
+            if intf.ip != None:
+                intf_info["ip"] = intf.ip
+                intf_info["prefixLen"] = intf.prefixLen
+                db.ARP.insert({"ip": intf.ip, "mac": intf.mac})
+            db.Intf.insert(intf_info)
+    for link in net.links:
+        intf1 = link.intf1
+        intf2 = link.intf2
+        db.Link.insert({"src_name": str(intf1.node),
+                        "src_port": getPortNo(intf1),
+                        "dst_name": str(intf2.node),
+                        "dst_port": getPortNo(intf2)})
+        if type(intf1.node) != type(intf2.node):
+            intf = intf1 if type(intf1.node) == type(Switch) else intf2
+            db.Node.update({"name": str(intf.node)},
+                           {"$set": {"type": "ext"}})
 
 def deploy(topo):
     info("Description: %s\n" % topo["summary"]["Description"])
@@ -28,11 +80,6 @@ def deploy(topo):
     info("Node-count:  %s\n" % topo["summary"]["Node-count"])
     info("Link-count:  %s\n" % topo["summary"]["Link-count"])
     info("AS-count:    %s\n" % topo["summary"]["As-count"])
-
-    conn = pymongo.Connection("127.0.0.1")
-    conn.drop_database("sStreaming")
-    db = conn["sStreaming"]
-    db.Version.insert({"Version": random.randint(1, 2**32)})
 
     net = Mininet(controller=RemoteController)
     c0 = net.addController('c0')
@@ -45,7 +92,6 @@ def deploy(topo):
     inter_as_ip_pool = {}
     for node_info in topo["nodes"]:
         name = "s%d" % node_info["id"]
-        as_map[node_info["id"]] = node_info["as"]
         hex_mac = "%012x" % node_info["id"]
         mac = ':'.join([hex_mac[0:2],
                         hex_mac[2:4],
@@ -54,6 +100,7 @@ def deploy(topo):
                         hex_mac[8:10],
                         hex_mac[10:12]])
         switch = net.addSwitch(name, dpid=mac)
+        as_map[str(switch)] = node_info["as"]
         if node_info["type"] == "ext":
             base = as_ip_pool.get(node_info["as"], 0)
             assert(base + 4 < 255)
@@ -64,19 +111,11 @@ def deploy(topo):
             host = net.addHost('h%d' % node_info["id"],
                                ip=host_ip,
                                defaultRoute=route)
+            as_map[str(host)] = node_info["as"]
             link = net.addLink(host, switch)
             ext_switches.add(node_info["id"])
             link.intf2.setIP(switch_ip)
-            db.Port.insert({"dpid": node_info["id"],
-                            "port": getPortNo(link.intf2),
-                            "mac": link.intf2.MAC(),
-                            "ip": switch_ip})
-            db.ARP.insert({"ip": host_ip, "mac": link.intf1.MAC()})
-            db.ARP.insert({"ip": switch_ip, "mac": link.intf2.MAC()})
         switches[node_info["id"]] = switch
-        db.Switch.insert({"dpid": node_info["id"],
-                          "as": node_info["as"],
-                          "type": node_info["type"]})
 
     info("*** Creating links\n")
     for link_info in topo["links"]:
@@ -90,20 +129,10 @@ def deploy(topo):
                         switches[link_info["dst"]],
                         cls=TCLink,
                         **link_info["args"])
-        src_bson = {"dpid": link_info["src"],
-                    "port": getPortNo(link.intf1),
-                    "mac": link.intf1.MAC(),
-                    "adj-dpid": link_info["dst"],
-                    "adj-port": getPortNo(link.intf2)}
-        dst_bson = {"dpid": link_info["dst"],
-                    "port": getPortNo(link.intf2),
-                    "mac": link.intf2.MAC(),
-                    "adj-dpid": link_info["src"],
-                    "adj-port": getPortNo(link.intf1)}
         if (link_info["src"] in ext_switches) \
                 and (link_info["dst"] in ext_switches):
-            as1 = as_map[link_info["src"]]
-            as2 = as_map[link_info["dst"]]
+            as1 = as_map["s%d" % link_info["src"]]
+            as2 = as_map["s%d" % link_info["dst"]]
             if as1 == as2:
                 base = as_ip_pool.get(as1, 1)
                 assert(base + 1 < 255)
@@ -119,32 +148,22 @@ def deploy(topo):
                 switch_ip2 = "10.%d.%d.%d/30" % (as1, as2, base+2)
             link.intf1.setIP(switch_ip1)
             link.intf2.setIP(switch_ip2)
-            src_bson["ip"] = switch_ip1
-            dst_bson["ip"] = switch_ip2
-            db.ARP.insert({"ip": switch_ip1, "mac": link.intf1.MAC()})
-            db.ARP.insert({"ip": switch_ip2, "mac": link.intf2.MAC()})
         elif link_info["src"] in ext_switches:
-            as1 = as_map[link_info["src"]]
+            as1 = as_map["s%d" % link_info["src"]]
             base = as_ip_pool.get(as1, 1)
             assert(base < 255)
             as_ip_pool[as1] = base + 1
             switch_ip1 = "172.18.%d.%d/24" % (as1, base)
             link.intf1.setIP(switch_ip1)
-            src_bson["ip"] = switch_ip1
-            db.ARP.insert({"ip": switch_ip1, "mac": link.intf1.MAC()})
         elif link_info["dst"] in ext_switches:
-            as2 = as_map[link_info["dst"]]
+            as2 = as_map["s%d" % link_info["dst"]]
             base = as_ip_pool.get(as2, 1)
             assert(base < 255)
             as_ip_pool[as2] = base + 1
             switch_ip2 = "172.18.%d.%d/24" % (as2, base)
             link.intf2.setIP(switch_ip2)
-            dst_bson["ip"] = switch_ip2
-            db.ARP.insert({"ip": switch_ip2, "mac": link.intf2.MAC()})
-        db.Port.insert(src_bson)
-        db.Port.insert(dst_bson)
 
-    conn.close()
+    exportToDB(net, as_map)
 
     info("*** Starting network\n")
     net.start()
