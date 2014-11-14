@@ -83,7 +83,6 @@ class Switching(app_manager.RyuApp):
 
     @set_ev_cls(EventPacketIn, MAIN_DISPATCHER)
     def _switching_handler(self, ev):
-        self.logger.debug("Switching: _switching_handler")
         msg = ev.msg
         pkt = ev.pkt
 
@@ -96,7 +95,6 @@ class Switching(app_manager.RyuApp):
         eth_dst = pkt.get_protocol(ethernet.ethernet).dst
 
         if eth_dst not in self.mac_map:
-            self.logger.info("Switching: dst %s not in mac_map" % eth_dst)
             return False
 
         src_name = self.name_map[dpid]
@@ -124,7 +122,6 @@ class Switching(app_manager.RyuApp):
     def _regdp_handler(self, ev):
         datapath = ev.datapath
         self.dps[datapath.id] = datapath
-        self.logger.debug("Switching reg dp %d" % datapath.id)
 
     def add_switch_flow(self, dpid, eth_dst, out_port):
         datapath = self.dps[dpid]

@@ -42,7 +42,6 @@ class ARPProxy(app_manager.RyuApp):
 
     @set_ev_cls(EventPacketIn, MAIN_DISPATCHER)
     def _arp_proxy_handler(self, ev):
-        self.logger.debug("ARP_Proxy: _arp_proxy_handler")
         msg = ev.msg
         pkt = ev.pkt
 

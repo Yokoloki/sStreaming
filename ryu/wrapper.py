@@ -77,14 +77,12 @@ class Wrapper(app_manager.RyuApp):
         datapath = msg.datapath
         in_port = msg.match["in_port"]
 
-        self.logger.debug("_packet_in_handler")
         pkt = packet.Packet(msg.data)
         eth_dst = pkt.get_protocol(ethernet.ethernet).dst
 
         if eth_dst == ETHERNET_FLOOD:
             #ARP proxy
             self.send_event_to_observers(Event_ARPProxy_PacketIn(msg, pkt))
-            self.logger.debug("ARP Proxy")
         #elif eth_dst == ETHERNET_MULTICAST:
             #Streaming
             #self.send_event_to_observers(Event_Streaming_PacketIn(msg, decoded_pkt))
@@ -92,4 +90,3 @@ class Wrapper(app_manager.RyuApp):
         else:
             #Switching
             self.send_event_to_observers(Event_Switching_PacketIn(msg, pkt))
-            self.logger.debug("Switching mac = %s" % eth_dst)
