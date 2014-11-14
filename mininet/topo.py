@@ -6,7 +6,7 @@ import random
 
 from mininet.net import Mininet
 from mininet.link import TCLink
-from mininet.node import RemoteController, Switch
+from mininet.node import RemoteController, Switch, OVSSwitch
 from mininet.cli import CLI
 from mininet.log import setLogLevel, info
 
@@ -39,7 +39,7 @@ def exportToDB(net, as_map):
             intf_info = {"node": name,
                          "port_no": port_no,
                          "mac": intf.mac}
-            if intf.ip != None:
+            if intf.ip and intf.mac:
                 intf_info["ip"] = intf.ip
                 intf_info["prefixLen"] = intf.prefixLen
                 db.ARP.insert({"ip": intf.ip, "mac": intf.mac})
@@ -50,14 +50,14 @@ def exportToDB(net, as_map):
         db.Node.insert({"name": name,
                         "type": "inn",
                         "as": as_,
-                        "dpid": int(switch.dpid)})
+                        "dpid": int(switch.dpid, 16)})
         for port_no in switch.intfs.keys():
             intf = switch.intfs[port_no]
             intf_info = {"node": name,
-                         "dpid": int(switch.dpid),
+                         "dpid": int(switch.dpid, 16),
                          "port_no": port_no,
                          "mac": intf.mac}
-            if intf.ip != None:
+            if intf.ip and intf.mac:
                 intf_info["ip"] = intf.ip
                 intf_info["prefixLen"] = intf.prefixLen
                 db.ARP.insert({"ip": intf.ip, "mac": intf.mac})
@@ -99,7 +99,7 @@ def deploy(topo):
                         hex_mac[6:8],
                         hex_mac[8:10],
                         hex_mac[10:12]])
-        switch = net.addSwitch(name, dpid=mac)
+        switch = net.addSwitch(name, dpid=mac, cls=OVSSwitch, protocols="OpenFlow13")
         as_map[str(switch)] = node_info["as"]
         if node_info["type"] == "ext":
             base = as_ip_pool.get(node_info["as"], 0)
@@ -168,9 +168,6 @@ def deploy(topo):
     info("*** Starting network\n")
     net.start()
     c0.start()
-    for k, v in switches.items():
-        v.start([c0])
-        v.cmd("ovs-vsctl set Bridge s%d protocols=OpenFlow13" % k)
     CLI(net)
 
     info("*** Stopping network\n")

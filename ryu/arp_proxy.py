@@ -8,10 +8,10 @@ from ryu.ofproto import ofproto_v1_3
 from ryu.lib.packet import packet, ethernet, arp
 
 class EventPacketIn(event.EventBase):
-    def __init__(self, msg, decoded_pkt):
+    def __init__(self, msg, pkt):
         super(EventPacketIn, self).__init__()
         self.msg = msg
-        self.decoded_pkt = decoded_pkt
+        self.pkt = pkt
 
 class EventReload(event.EventBase):
     def __init__(self):
@@ -44,20 +44,22 @@ class ARPProxy(app_manager.RyuApp):
     def _arp_proxy_handler(self, ev):
         self.logger.debug("ARP_Proxy: _arp_proxy_handler")
         msg = ev.msg
-        decoded_pkt = ev.decoded_pkt
+        pkt = ev.pkt
 
         datapath = msg.datapath
         ofproto = datapath.ofproto
         parser = datapath.ofproto_parser
         in_port = msg.match["in_port"]
 
-        if 'arp' not in decoded_pkt or \
-                decoded_pkt['arp'].opcode != arp.ARP_REQUEST:
-            return False
+        eth_protocol = pkt.get_protocol(ethernet.ethernet)
+        eth_src = eth_protocol.src
 
-        eth_src = decoded_pkt['ethernet'].src
-        src_ip = decoded_pkt['arp'].src_ip
-        dst_ip = decoded_pkt['arp'].dst_ip
+        arp_protocol = pkt.get_protocol(arp.arp)
+        if not arp_protocol or \
+                arp_protocol.opcode != arp.ARP_REQUEST:
+            return False
+        src_ip = arp_protocol.src_ip
+        dst_ip = arp_protocol.dst_ip
         dst_mac = self.arp_table.get(dst_ip)
 
         if dst_mac == None:
@@ -67,7 +69,7 @@ class ARPProxy(app_manager.RyuApp):
         ARP_Reply = packet.Packet()
         ARP_Reply.add_protocol(
                 ethernet.ethernet(
-                    ethertype=decoded_pkt['ethernet'].ethertype,
+                    ethertype=eth_protocol.ethertype,
                     dst=eth_src,
                     src=dst_mac))
         ARP_Reply.add_protocol(

@@ -6,13 +6,13 @@ from ryu.controller import ofp_event, event
 from ryu.controller.handler import CONFIG_DISPATCHER, MAIN_DISPATCHER
 from ryu.controller.handler import set_ev_cls
 from ryu.ofproto import ofproto_v1_3
-from ryu.lib.packet import packet, ethernet, arp
+from ryu.lib.packet import packet, ethernet
 
 class EventPacketIn(event.EventBase):
-    def __init__(self, msg, decoded_pkt):
+    def __init__(self, msg, pkt):
         super(EventPacketIn, self).__init__()
         self.msg = msg
-        self.decoded_pkt = decoded_pkt
+        self.pkt = pkt
 
 class EventReload(event.EventBase):
     def __init__(self):
@@ -23,16 +23,16 @@ class EventRegDp(event.EventBase):
         super(EventRegDp, self).__init__()
         self.datapath = datapath
 
-class L2Forwarding(app_manager.RyuApp):
+class Switching(app_manager.RyuApp):
     OFP_VERSIONS = [ofproto_v1_3.OFP_VERSION]
 
     def __init__(self, *args, **kwargs):
-        super(L2Forwarding, self).__init__(*args, **kwargs)
-        self.logger = logging.getLogger('L2Forwarding')
+        super(Switching, self).__init__(*args, **kwargs)
+        self.logger = logging.getLogger('Switching')
         self.logger.setLevel(logging.DEBUG)
         self.conn = pymongo.Connection("127.0.0.1")
         self.db = self.conn["sStreaming"]
-        self.logger.debug("L2Forwarding: init")
+        self.logger.debug("Switching: init")
         #dpid -> datapath
         self.dps = {}
         #as -> nx.graph
@@ -50,7 +50,7 @@ class L2Forwarding(app_manager.RyuApp):
 
     @set_ev_cls(EventReload, CONFIG_DISPATCHER)
     def _reload_handler(self, ev):
-        self.logger.debug("L2Forwarding: _reload_handler")
+        self.logger.debug("Switching: _reload_handler")
         del self.dps
         del self.graphs
         del self.as_map
@@ -91,10 +91,10 @@ class L2Forwarding(app_manager.RyuApp):
                 self.port_map[(dst_name, src_name)] = link["dst_port"]
 
     @set_ev_cls(EventPacketIn, MAIN_DISPATCHER)
-    def _l2_forwarding_handler(self, ev):
-        self.logger.debug("L2Forwarding: _l2_forwarding_handler")
+    def _switching_handler(self, ev):
+        self.logger.debug("Switching: _switching_handler")
         msg = ev.msg
-        decoded_pkt = ev.decoded_pkt
+        pkt = ev.pkt
 
         datapath = msg.datapath
         ofproto = datapath.ofproto
@@ -102,10 +102,10 @@ class L2Forwarding(app_manager.RyuApp):
         in_port = msg.match["in_port"]
 
         dpid = datapath.id
-        eth_dst = decoded_pkt["ethernet"].dst
+        eth_dst = pkt.get_protocol(ethernet.ethernet).dst
 
         if eth_dst not in self.mac_map:
-            self.logger.info("L2Forwarding: dst %s not in mac_map" % eth_dst)
+            self.logger.info("Switching: dst %s not in mac_map" % eth_dst)
             return False
 
         src_name = self.name_map[dpid]
@@ -113,7 +113,7 @@ class L2Forwarding(app_manager.RyuApp):
         as1 = self.as_map[src_name]
         as2 = self.as_map[dst_name]
         if as1 != as2:
-            self.logger.info("L2Forwarding: dst %s is not in the same AS as dp%s" %
+            self.logger.info("Switching: dst %s is not in the same AS as dp%s" %
                     (eth_dst, dpid))
             return False
         graph = self.graphs[as1]
@@ -139,6 +139,7 @@ class L2Forwarding(app_manager.RyuApp):
     def _regdp_handler(self, ev):
         datapath = ev.datapath
         self.dps[datapath.id] = datapath
+        self.logger.debug("Switching reg dp %d" % datapath.id)
 
     def add_l2_flow(self, dpid, eth_dst, out_port):
         datapath = self.dps[dpid]
@@ -150,6 +151,6 @@ class L2Forwarding(app_manager.RyuApp):
         actions = [parser.OFPActionOutput(out_port)]
         inst = [parser.OFPInstructionActions(ofproto.OFPIT_APPLY_ACTIONS, actions)]
         mod = parser.OFPFlowMod(datapath=datapath, priority=priority,
-                                match=match, instructions=inst)
+                                match=match, instructions=inst, idle_timeout=300)
         datapath.send_msg(mod)
 

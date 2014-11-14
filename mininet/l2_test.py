@@ -3,7 +3,7 @@ import random
 import re
 
 from mininet.net import Mininet
-from mininet.node import RemoteController, Switch
+from mininet.node import RemoteController, Switch, OVSSwitch
 from mininet.cli import CLI
 from mininet.log import setLogLevel, info
 
@@ -27,7 +27,7 @@ def exportToDB(net, as_map):
             intf_info = {"node": name,
                          "port_no": port_no,
                          "mac": intf.mac}
-            if intf.ip != None:
+            if intf.ip and intf.mac:
                 intf_info["ip"] = intf.ip
                 intf_info["prefixLen"] = intf.prefixLen
                 db.ARP.insert({"ip": intf.ip, "mac": intf.mac})
@@ -40,12 +40,13 @@ def exportToDB(net, as_map):
                         "as": as_,
                         "dpid": int(switch.dpid)})
         for port_no in switch.intfs.keys():
+            #if port_no == 0: continue
             intf = switch.intfs[port_no]
             intf_info = {"node": name,
                          "dpid": int(switch.dpid),
                          "port_no": port_no,
                          "mac": intf.mac}
-            if intf.ip != None:
+            if intf.ip and intf.mac:
                 intf_info["ip"] = intf.ip
                 intf_info["prefixLen"] = intf.prefixLen
                 db.ARP.insert({"ip": intf.ip, "mac": intf.mac})
@@ -72,7 +73,7 @@ def deploy():
     info("*** Adding switch\n")
     switches = {}
     for i in xrange(4):
-        switch = net.addSwitch("s%d" % (i+1))
+        switch = net.addSwitch("s%d" % (i+1), cls=OVSSwitch, protocols="OpenFlow13")
         as_map[str(switch)] = 1
         switches[i] = switch
 
@@ -90,9 +91,9 @@ def deploy():
     info("*** Starting network\n")
     net.start()
     c0.start()
-    for k, v in switches.items():
-        v.start([c0])
-        v.cmd("ovs-vsctl set Bridge s%d protocols=OpenFlow13" % (k+1))
+    #for k, v in switches.items():
+    #    v.start([c0])
+    #    v.cmd("ovs-vsctl set Bridge s%d protocols=OpenFlow13" % (k+1))
 
     exportToDB(net, as_map)
     CLI(net)
