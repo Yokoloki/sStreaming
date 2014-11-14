@@ -36,14 +36,13 @@ def exportToDB(net, as_map):
                         "as": as_})
         for port_no in host.intfs.keys():
             intf = host.intfs[port_no]
-            intf_info = {"node": name,
-                         "port_no": port_no,
-                         "mac": intf.mac}
-            if intf.ip and intf.mac:
-                intf_info["ip"] = intf.ip
-                intf_info["prefixLen"] = intf.prefixLen
-                db.ARP.insert({"ip": intf.ip, "mac": intf.mac})
-            db.Intf.insert(intf_info)
+            if not intf.mac: continue
+            ip, pLen = host.params["ip"].split("/")
+            db.Intf.insert({"node": name,
+                            "port_no": port_no,
+                            "mac": intf.mac,
+                            "ip": ip})
+            db.ARP.insert({"ip": ip, "mac": intf.mac})
     for switch in net.switches:
         name = str(switch)
         as_ = as_map[name]
@@ -53,15 +52,11 @@ def exportToDB(net, as_map):
                         "dpid": int(switch.dpid, 16)})
         for port_no in switch.intfs.keys():
             intf = switch.intfs[port_no]
-            intf_info = {"node": name,
-                         "dpid": int(switch.dpid, 16),
-                         "port_no": port_no,
-                         "mac": intf.mac}
-            if intf.ip and intf.mac:
-                intf_info["ip"] = intf.ip
-                intf_info["prefixLen"] = intf.prefixLen
-                db.ARP.insert({"ip": intf.ip, "mac": intf.mac})
-            db.Intf.insert(intf_info)
+            if not intf.mac: continue
+            db.Intf.insert({"node": name,
+                            "dpid": int(switch.dpid, 16),
+                            "port_no": port_no,
+                            "mac": intf.mac})
     for link in net.links:
         intf1 = link.intf1
         intf2 = link.intf2
@@ -88,8 +83,7 @@ def deploy(topo):
     switches = {}
     as_map = {}
     ext_switches = set()
-    as_ip_pool = {}
-    inter_as_ip_pool = {}
+    ip_base = 1
     for node_info in topo["nodes"]:
         name = "s%d" % node_info["id"]
         hex_mac = "%012x" % node_info["id"]
@@ -102,19 +96,12 @@ def deploy(topo):
         switch = net.addSwitch(name, dpid=mac, cls=OVSSwitch, protocols="OpenFlow13")
         as_map[str(switch)] = node_info["as"]
         if node_info["type"] == "ext":
-            base = as_ip_pool.get(node_info["as"], 0)
-            assert(base + 4 < 255)
-            as_ip_pool[node_info["as"]] = base + 4
-            host_ip = "172.19.%d.%d/30" % (node_info["as"], base+1)
-            switch_ip = "172.19.%d.%d/30" % (node_info["as"], base+2)
-            route = "dev h%d-eth0 via %s" % (node_info["id"], switch_ip.split("/")[0])
-            host = net.addHost('h%d' % node_info["id"],
-                               ip=host_ip,
-                               defaultRoute=route)
+            host_ip = "172.18.%d.%d/16" % (ip_base/256, ip_base%256)
+            ip_base += 1
+            host = net.addHost('h%d' % node_info["id"], ip=host_ip)
             as_map[str(host)] = node_info["as"]
             link = net.addLink(host, switch)
             ext_switches.add(node_info["id"])
-            link.intf2.setIP(switch_ip)
         switches[node_info["id"]] = switch
 
     info("*** Creating links\n")
@@ -129,39 +116,6 @@ def deploy(topo):
                         switches[link_info["dst"]],
                         cls=TCLink,
                         **link_info["args"])
-        if (link_info["src"] in ext_switches) \
-                and (link_info["dst"] in ext_switches):
-            as1 = as_map["s%d" % link_info["src"]]
-            as2 = as_map["s%d" % link_info["dst"]]
-            if as1 == as2:
-                base = as_ip_pool.get(as1, 1)
-                assert(base + 1 < 255)
-                as_ip_pool[as1] = base + 2
-                switch_ip1 = "172.18.%d.%d/24" % (as1, base)
-                switch_ip2 = "172.18.%d.%d/24" % (as1, base+1)
-            else:
-                as1, as2 = min(as1, as2), max(as1, as2)
-                base = inter_as_ip_pool.get((as1, as2), 0)
-                assert(base + 4 < 255)
-                inter_as_ip_pool[(as1, as2)] = base + 4
-                switch_ip1 = "10.%d.%d.%d/30" % (as1, as2, base+1)
-                switch_ip2 = "10.%d.%d.%d/30" % (as1, as2, base+2)
-            link.intf1.setIP(switch_ip1)
-            link.intf2.setIP(switch_ip2)
-        elif link_info["src"] in ext_switches:
-            as1 = as_map["s%d" % link_info["src"]]
-            base = as_ip_pool.get(as1, 1)
-            assert(base < 255)
-            as_ip_pool[as1] = base + 1
-            switch_ip1 = "172.18.%d.%d/24" % (as1, base)
-            link.intf1.setIP(switch_ip1)
-        elif link_info["dst"] in ext_switches:
-            as2 = as_map["s%d" % link_info["dst"]]
-            base = as_ip_pool.get(as2, 1)
-            assert(base < 255)
-            as_ip_pool[as2] = base + 1
-            switch_ip2 = "172.18.%d.%d/24" % (as2, base)
-            link.intf2.setIP(switch_ip2)
 
     exportToDB(net, as_map)
 

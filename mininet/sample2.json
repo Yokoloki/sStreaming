@@ -2,26 +2,28 @@
     "summary": {
         "Description": "Just a demo network",
         "Gen-time": "2014-11-07 10:20",
-        "Node-count": 3,
-        "Link-count": 2,
-        "As-count": 3
+        "Node-count": 4,
+        "Link-count": 3,
+        "As-count": 1
     },
     "defaults": {
         "link": {
             "bw": 10,
             "delay": "5ms",
             "jitter": "2ms",
-            "loss": 1,
+            "loss": 0,
             "max_queue_size": 800
         }
     },
     "nodes": [
         {"id": 1, "type": "ext", "as": 1},
-        {"id": 2, "type": "ext", "as": 2},
-        {"id": 3, "type": "ext", "as": 3}
+        {"id": 2, "type": "ext", "as": 1},
+        {"id": 3, "type": "ext", "as": 1},
+        {"id": 4, "type": "inn", "as": 1}
     ],
     "links": [
-        {"src": 1, "dst": 2},
-        {"src": 2, "dst": 3}
+        {"src": 1, "dst": 4},
+        {"src": 2, "dst": 4},
+        {"src": 3, "dst": 4}
     ]
 }

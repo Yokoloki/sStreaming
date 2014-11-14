@@ -35,10 +35,8 @@ class Switching(app_manager.RyuApp):
         self.logger.debug("Switching: init")
         #dpid -> datapath
         self.dps = {}
-        #as -> nx.graph
-        self.graphs = {}
-        #name -> as
-        self.as_map = {}
+        #nx.Graph for path calculation
+        self.graph = nx.Graph()
         #dpid -> name
         self.name_map = {}
         #name -> dpid
@@ -52,16 +50,14 @@ class Switching(app_manager.RyuApp):
     def _reload_handler(self, ev):
         self.logger.debug("Switching: _reload_handler")
         del self.dps
-        del self.graphs
-        del self.as_map
+        del self.graph
         del self.name_map
         del self.dpid_map
         del self.mac_map
         del self.port_map
 
         self.dps = {}
-        self.graphs = {}
-        self.as_map = {}
+        self.graph = nx.Graph()
         self.name_map = {}
         self.dpid_map = {}
         self.mac_map = {}
@@ -69,12 +65,10 @@ class Switching(app_manager.RyuApp):
 
         nodes = self.db.Node.find()
         for node in nodes:
-            graph = self.graphs.setdefault(node["as"], nx.Graph())
-            graph.add_node(node["name"])
+            self.graph.add_node(node["name"])
             if "dpid" in node:
                 self.dpid_map[node["name"]] = node["dpid"]
                 self.name_map[node["dpid"]] = node["name"]
-            self.as_map[node["name"]] = node["as"]
         intfs = self.db.Intf.find()
         for intf in intfs:
             self.mac_map[intf["mac"]] = intf["node"]
@@ -83,12 +77,9 @@ class Switching(app_manager.RyuApp):
         for link in links:
             src_name = link["src_name"]
             dst_name = link["dst_name"]
-            src_as = self.as_map[src_name]
-            dst_as = self.as_map[dst_name]
-            if src_as == dst_as:
-                self.graphs[src_as].add_edge(src_name, dst_name)
-                self.port_map[(src_name, dst_name)] = link["src_port"]
-                self.port_map[(dst_name, src_name)] = link["dst_port"]
+            self.graph.add_edge(src_name, dst_name)
+            self.port_map[(src_name, dst_name)] = link["src_port"]
+            self.port_map[(dst_name, src_name)] = link["dst_port"]
 
     @set_ev_cls(EventPacketIn, MAIN_DISPATCHER)
     def _switching_handler(self, ev):
@@ -110,18 +101,12 @@ class Switching(app_manager.RyuApp):
 
         src_name = self.name_map[dpid]
         dst_name = self.mac_map[eth_dst]
-        as1 = self.as_map[src_name]
-        as2 = self.as_map[dst_name]
-        if as1 != as2:
-            self.logger.info("Switching: dst %s is not in the same AS as dp%s" %
-                    (eth_dst, dpid))
-            return False
-        graph = self.graphs[as1]
-        path = nx.shortest_path(graph, source=src_name, target=dst_name)
+
+        path = nx.shortest_path(self.graph, source=src_name, target=dst_name)
         assert(len(path) > 1)
         for i in xrange(len(path)-1):
             out_port = self.port_map[(path[i], path[i+1])]
-            self.add_l2_flow(self.dpid_map[path[i]], eth_dst, out_port)
+            self.add_switch_flow(self.dpid_map[path[i]], eth_dst, out_port)
 
         data = None
         if msg.buffer_id == ofproto.OFP_NO_BUFFER:
@@ -141,7 +126,7 @@ class Switching(app_manager.RyuApp):
         self.dps[datapath.id] = datapath
         self.logger.debug("Switching reg dp %d" % datapath.id)
 
-    def add_l2_flow(self, dpid, eth_dst, out_port):
+    def add_switch_flow(self, dpid, eth_dst, out_port):
         datapath = self.dps[dpid]
         ofproto = datapath.ofproto
         parser = datapath.ofproto_parser
