@@ -7,13 +7,18 @@ from ryu.controller import ofp_event
 from ryu.controller.handler import CONFIG_DISPATCHER, MAIN_DISPATCHER
 from ryu.controller.handler import set_ev_cls
 from ryu.lib.packet import packet, ethernet
+from ryu.lib.mac import haddr_to_bin
 from arp_proxy import ARPProxy
 from arp_proxy import EventPacketIn as Event_ARPProxy_PacketIn
 from arp_proxy import EventReload as Event_ARPProxy_Reload
-from switching import Switching
-from switching import EventPacketIn as Event_Switching_PacketIn
-from switching import EventReload as Event_Switching_Reload
-from switching import EventRegDp as Event_Switching_RegDp
+#from switching import Switching
+from multiswitching import Switching
+#from switching import EventPacketIn as Event_Switching_PacketIn
+from multiswitching import EventPacketIn as Event_Switching_PacketIn
+#from switching import EventReload as Event_Switching_Reload
+from multiswitching import EventReload as Event_Switching_Reload
+#from switching import EventRegDp as Event_Switching_RegDp
+from multiswitching import EventRegDp as Event_Switching_RegDp
 #from streaming import EventPacketIn as Event_Streaming_PacketIn
 #from streaming import EventReload as Event_Streaming_Reload
 
@@ -59,6 +64,15 @@ class Wrapper(app_manager.RyuApp):
         miss_actions = [parser.OFPActionOutput(ofproto.OFPP_CONTROLLER,
                                           ofproto.OFPCML_NO_BUFFER)]
         self.add_flow(datapath, 0, miss_match, miss_actions)
+
+        # ipv6 discovery entry
+        ipv6_dl_dst = "33:33:00:00:00:00"
+        ipv6_dl_mask = "ff:ff:00:00:00:00"
+        ipv6_match = parser.OFPMatch()
+        ipv6_match.set_dl_dst_masked(haddr_to_bin(ipv6_dl_dst),
+                                     haddr_to_bin(ipv6_dl_mask))
+        ipv6_actions = []
+        self.add_flow(datapath, 1, ipv6_match, ipv6_actions)
 
         self.send_event_to_observers(Event_Switching_RegDp(datapath))
 

@@ -101,16 +101,25 @@ class Switching(app_manager.RyuApp):
         src_name = self.name_map[dpid]
         dst_name = self.mac_map[eth_dst]
 
-        path = nx.shortest_path(self.graph, source=src_name, target=dst_name)
-        assert(len(path) > 1)
-        for i in xrange(len(path)-1):
-            out_port = self.port_map[(path[i], path[i+1])]
-            self.add_switch_flow(self.dpid_map[path[i]], eth_dst, out_port)
-
+        paths = nx.all_shortest_paths(self.graph, source=src_name, target=dst_name)
+        paths = list(paths)
+        path_len = len(paths[0])
+        path_count = len(paths)
+        for i in xrange(path_len-1):
+            rules = {}
+            for j in xrange(path_count):
+                out_ports = rules.setdefault(paths[j][i], set())
+                port = self.port_map[(paths[j][i], paths[j][i+1])]
+                out_ports.add(port)
+            for src in rules.keys():
+                self.add_multiswitch_flow(self.dpid_map[src],
+                                               eth_dst,
+                                               rules[src])
         data = None
         if msg.buffer_id == ofproto.OFP_NO_BUFFER:
             data = msg.data
-        actions = [parser.OFPActionOutput(self.port_map[(path[0], path[1])])]
+        actions = [parser.OFPActionOutput(
+            self.port_map[(paths[0][0], paths[0][1])])]
         out = parser.OFPPacketOut(datapath=datapath,
                                   buffer_id=msg.buffer_id,
                                   in_port=in_port,
@@ -125,14 +134,27 @@ class Switching(app_manager.RyuApp):
         datapath = ev.datapath
         self.dps[datapath.id] = datapath
 
-    def add_switch_flow(self, dpid, eth_dst, out_port):
+    def add_multiswitch_flow(self, dpid, eth_dst, out_ports):
         datapath = self.dps[dpid]
         ofproto = datapath.ofproto
         parser = datapath.ofproto_parser
 
+        group_id = hash(eth_dst) % (2**32)
+        buckets = []
+        for port in out_ports:
+            actions = [parser.OFPActionOutput(port)]
+            buckets.append(parser.OFPBucket(actions=actions))
+
+        gmod = parser.OFPGroupMod(datapath=datapath,
+                                  command=ofproto.OFPGC_ADD,
+                                  type_=ofproto.OFPGT_SELECT,
+                                  group_id=group_id,
+                                  buckets=buckets)
+        datapath.send_msg(gmod)
+
         priority = 5
         match = parser.OFPMatch(eth_dst=eth_dst)
-        actions = [parser.OFPActionOutput(out_port)]
+        actions = [parser.OFPActionGroup(group_id, ofproto.OFPGT_SELECT)]
         inst = [parser.OFPInstructionActions(ofproto.OFPIT_APPLY_ACTIONS, actions)]
         mod = parser.OFPFlowMod(datapath=datapath, priority=priority,
                                 match=match, instructions=inst, idle_timeout=300)
