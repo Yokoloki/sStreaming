@@ -6,6 +6,7 @@ from ryu.controller import ofp_event, event
 from ryu.controller.handler import CONFIG_DISPATCHER, MAIN_DISPATCHER
 from ryu.controller.handler import set_ev_cls
 from ryu.ofproto import ofproto_v1_3
+from ryu.topology.event import *
 from ryu.lib.packet import packet, ethernet
 
 class EventPacketIn(event.EventBase):
@@ -18,10 +19,17 @@ class EventReload(event.EventBase):
     def __init__(self):
         super(EventReload, self).__init__()
 
-class EventRegDp(event.EventBase):
+class EventDpReg(event.EventBase):
     def __init__(self, datapath):
-        super(EventRegDp, self).__init__()
+        super(EventDpReg, self).__init__()
         self.datapath = datapath
+
+class EventHostReg(event.EventBase):
+    def __init__(self, dpid, port, mac):
+        super(EventHostReg, self).__init__()
+        self.mac = mac
+        self.dpid = dpid
+        self.dp_port = port
 
 class Switching(app_manager.RyuApp):
     OFP_VERSIONS = [ofproto_v1_3.OFP_VERSION]
@@ -30,102 +38,148 @@ class Switching(app_manager.RyuApp):
         super(Switching, self).__init__(*args, **kwargs)
         self.logger = logging.getLogger('Switching')
         self.logger.setLevel(logging.DEBUG)
-        self.conn = pymongo.Connection("127.0.0.1")
-        self.db = self.conn["sStreaming"]
         self.logger.debug("Switching: init")
         #dpid -> datapath
         self.dps = {}
-        #nx.Graph for path calculation
+        #dpid -> [{hw_addr, name, port_no, dpid}]
+        self.dp_ports = {}
+        #mac -> (dpid, port)
+        self.hosts = {}
+        #(src, dst) -> out_port
+        self.link_outport = {}
+        #flow_id - > [{"dpid", "match", "action"}]
+        self.flows = {}
+        #link -> flow_id_involved
+        self.link_to_flows = {}
+        #flow_id -> links_used_by_flow
         self.graph = nx.Graph()
-        #dpid -> name
-        self.name_map = {}
-        #name -> dpid
-        self.dpid_map = {}
-        #mac -> name
-        self.mac_map = {}
-        #(name1, name2) -> out_port
-        self.port_map = {}
 
-    @set_ev_cls(EventReload, CONFIG_DISPATCHER)
-    def _reload_handler(self, ev):
-        self.logger.debug("Switching: _reload_handler")
-        del self.dps
-        del self.graph
-        del self.name_map
-        del self.dpid_map
-        del self.mac_map
-        del self.port_map
+    @set_ev_cls(EventDpReg, CONFIG_DISPATCHER)
+    def _dp_reg_handler(self, ev):
+        datapath = ev.datapath
+        self.dps[datapath.id] = datapath
 
-        self.dps = {}
-        self.graph = nx.Graph()
-        self.name_map = {}
-        self.dpid_map = {}
-        self.mac_map = {}
-        self.port_map = {}
+    @set_ev_cls(EventHostReg, MAIN_DISPATCHER)
+    def _host_reg_handler(self, ev):
+        self.hosts[ev.mac] = (ev.dpid, ev.dp_port)
 
-        nodes = self.db.Node.find()
-        for node in nodes:
-            self.graph.add_node(node["name"])
-            if "dpid" in node:
-                self.dpid_map[node["name"]] = node["dpid"]
-                self.name_map[node["dpid"]] = node["name"]
-        intfs = self.db.Intf.find()
-        for intf in intfs:
-            self.mac_map[intf["mac"]] = intf["node"]
+    @set_ev_cls(EventSwitchEnter)
+    def _switch_enter_handler(self, ev):
+        msg = ev.switch.to_dict()
+        dpid = int(msg["dpid"])
+        self.dp_ports[dpid] = msg["ports"]
+        self.graph.add_node(dpid)
 
-        links = self.db.Link.find()
-        for link in links:
-            src_name = link["src_name"]
-            dst_name = link["dst_name"]
-            self.graph.add_edge(src_name, dst_name)
-            self.port_map[(src_name, dst_name)] = link["src_port"]
-            self.port_map[(dst_name, src_name)] = link["dst_port"]
+    @set_ev_cls(EventSwitchLeave)
+    def _switch_leave_handler(self, ev):
+        msg = ev.switch.to_dict()
+        dpid = int(msg["dpid"])
+        if dpid in self.dps:
+            del self.dps[dpid]
+        if dpid in self.dp_ports:
+            del self.dp_ports[dpid]
+        if dpid in self.graph.nodes():
+            self.graph.remove_node(dpid)
+        for mac in self.hosts.keys():
+            if dpid == self.hosts[mac][0]:
+                del self.hosts[mac]
+        for (src, dst) in self.link_to_flows.keys():
+            if src == dpid or dst == dpid:
+                self.del_related_flows(src, dst)
+
+    @set_ev_cls(EventLinkAdd)
+    def _link_add_handler(self, ev):
+        msg = ev.link.to_dict()
+        src_dpid = int(msg["src"]["dpid"])
+        src_port_no = int(msg["src"]["port_no"])
+        dst_dpid = int(msg["dst"]["dpid"])
+        dst_port_no = int(msg["dst"]["port_no"])
+        self.link_outport[(src_dpid, dst_dpid)] = src_port_no
+        self.link_outport[(dst_dpid, src_dpid)] = dst_port_no
+        self.graph.add_edge(src_dpid, dst_dpid)
+
+    @set_ev_cls(EventLinkDelete)
+    def _link_del_handler(self, ev):
+        msg = ev.link.to_dict()
+        src_dpid = int(msg["src"]["dpid"])
+        src_port_no = int(msg["src"]["port_no"])
+        dst_dpid = int(msg["dst"]["dpid"])
+        dst_port_no = int(msg["dst"]["port_no"])
+        if (src_dpid, dst_dpid) in self.link_outport:
+            del self.link_outport[(src_dpid, dst_dpid)]
+        if (dst_dpid, src_dpid) in self.link_outport:
+            del self.link_outport[(dst_dpid, src_dpid)]
+        if (src_dpid, dst_dpid) in self.graph.edges() or \
+                (dst_dpid, src_dpid) in self.graph.edges():
+                    self.graph.remove_edge(src_dpid, dst_dpid)
+        self.del_related_flows(src_dpid, dst_dpid)
+
+    def del_related_flows(self, src, dst):
+        if (src, dst) in self.link_to_flows or \
+                (dst, src) in self.link_to_flows:
+                    if (src, dst) not in self.link_to_flows:
+                        src, dst = dst, src
+                    flow_ids = self.link_to_flows[(src, dst)]
+                    for flow_id in flow_ids:
+                        self.del_flow_by_id(flow_id)
+                    del self.link_to_flows[(src, dst)]
+
+    def del_flow_by_id(self, flow_id):
+        if flow_id not in self.flows:
+            return
+        for entry in self.flows[flow_id]:
+            dpid = entry["dpid"]
+            out_port = entry["out_port"]
+            match = entry["match"]
+            self.del_switch_flow(dpid, out_port, ofproto.OFPG_ANY, match)
+        del self.flows[flow_id]
+
 
     @set_ev_cls(EventPacketIn, MAIN_DISPATCHER)
     def _switching_handler(self, ev):
         msg = ev.msg
         pkt = ev.pkt
 
-        datapath = msg.datapath
-        ofproto = datapath.ofproto
-        parser = datapath.ofproto_parser
         in_port = msg.match["in_port"]
 
-        dpid = datapath.id
+        dpid = msg.datapath.id
         eth_dst = pkt.get_protocol(ethernet.ethernet).dst
 
-        if eth_dst not in self.mac_map:
-            self.logger.debug("Switching: %s not in mac_map" % eth_dst)
+        if eth_dst not in self.hosts:
+            self.logger.debug("Switching: %s has not been discovered" % eth_dst)
             return False
 
-        src_name = self.name_map[dpid]
-        dst_name = self.mac_map[eth_dst]
+        dst_dpid, dst_out_port = self.hosts[eth_dst]
+        path = nx.shortest_path(self.graph, source=dpid, target=dst_dpid)
+        if len(path) < 2:
+            return False
 
-        path = nx.shortest_path(self.graph, source=src_name, target=dst_name)
-        assert(len(path) > 1)
+        flow_id = hash(eth_dst) % (2**32)
+        self.flows[flow_id] = []
         for i in xrange(len(path)-1):
-            out_port = self.port_map[(path[i], path[i+1])]
-            self.add_switch_flow(self.dpid_map[path[i]], eth_dst, out_port)
+            out_port = self.link_outport[(path[i], path[i+1])]
+            self.add_switch_flow(flow_id, path[i], eth_dst, out_port)
 
-        data = None
-        if msg.buffer_id == ofproto.OFP_NO_BUFFER:
-            data = msg.data
-        actions = [parser.OFPActionOutput(self.port_map[(path[0], path[1])])]
+            flow_ids = self.link_to_flows.setdefault((path[i], path[i+1]), set())
+            flow_ids.add(flow_id)
+
+        self.add_switch_flow(flow_id, dst_dpid, eth_dst, dst_out_port)
+
+        #Send to last switch directly
+        datapath = self.dps[dst_dpid]
+        ofproto = datapath.ofproto
+        parser = datapath.ofproto_parser
+        actions = [parser.OFPActionOutput(dst_out_port)]
         out = parser.OFPPacketOut(datapath=datapath,
-                                  buffer_id=msg.buffer_id,
-                                  in_port=in_port,
+                                  buffer_id=ofproto.OFP_NO_BUFFER,
+                                  in_port=ofproto.OFPP_CONTROLLER,
                                   actions=actions,
-                                  data=data)
+                                  data=msg.data)
         datapath.send_msg(out)
-        self.logger.debug("Switching: eth_dst %s switched" % eth_dst)
+        self.logger.debug("Switching: flow{eth_dst:%s} created" % eth_dst)
         return True
 
-    @set_ev_cls(EventRegDp, CONFIG_DISPATCHER)
-    def _regdp_handler(self, ev):
-        datapath = ev.datapath
-        self.dps[datapath.id] = datapath
-
-    def add_switch_flow(self, dpid, eth_dst, out_port):
+    def add_switch_flow(self, flow_id, dpid, eth_dst, out_port):
         datapath = self.dps[dpid]
         ofproto = datapath.ofproto
         parser = datapath.ofproto_parser
@@ -137,4 +191,21 @@ class Switching(app_manager.RyuApp):
         mod = parser.OFPFlowMod(datapath=datapath, priority=priority,
                                 match=match, instructions=inst, idle_timeout=300)
         datapath.send_msg(mod)
+        self.flows[flow_id].append({"dpid": dpid,
+                                    "out_port": out_port,
+                                    "match": match})
 
+    def del_switch_flow(self, dpid, out_port, out_group, match):
+        if dpid not in self.dps:
+            return
+        datapath = self.dps[dpid]
+        ofproto = datapath.ofproto
+        parser = datapath.ofproto_parser
+
+        mod = parser.OFPFlowMod(datapath=datapath,
+                                command=ofproto.OFPFC_DELETE,
+                                out_port=out_port,
+                                out_group=out_group,
+                                match=match,
+                                instructions=[])
+        datapath.send_msg(mod)

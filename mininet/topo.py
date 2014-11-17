@@ -3,7 +3,6 @@ import json
 import pymongo
 import re
 import random
-import time
 
 from mininet.net import Mininet
 from mininet.link import TCLink
@@ -117,8 +116,7 @@ def deploy(topo):
                         switches[link_info["dst"]],
                         cls=TCLink,
                         **link_info["args"])
-    exportToDB(net, as_map)
-    time.sleep(1)
+    #exportToDB(net, as_map)
     info("*** Starting network\n")
     net.start()
     c0.start()
