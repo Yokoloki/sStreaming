@@ -1,4 +1,3 @@
-import pymongo
 import logging
 import networkx as nx
 from ryu.base import app_manager
@@ -39,6 +38,7 @@ class Switching(app_manager.RyuApp):
         self.logger = logging.getLogger('Switching')
         self.logger.setLevel(logging.DEBUG)
         self.logger.debug("Switching: init")
+        self.multipath = False
         #dpid -> datapath
         self.dps = {}
         #dpid -> [{hw_addr, name, port_no, dpid}]
@@ -53,6 +53,9 @@ class Switching(app_manager.RyuApp):
         self.link_to_flows = {}
         #flow_id -> links_used_by_flow
         self.graph = nx.Graph()
+
+    def enable_multipath(self):
+        self.multipath = True
 
     @set_ev_cls(EventDpReg, CONFIG_DISPATCHER)
     def _dp_reg_handler(self, ev):
@@ -129,11 +132,13 @@ class Switching(app_manager.RyuApp):
             return
         for entry in self.flows[flow_id]:
             dpid = entry["dpid"]
+            if dpid not in self.dps:
+                continue
             out_port = entry["out_port"]
+            out_group = entry["out_group"]
             match = entry["match"]
-            self.del_switch_flow(dpid, out_port, ofproto.OFPG_ANY, match)
+            self.del_switch_flow(dpid, out_port, out_group, match)
         del self.flows[flow_id]
-
 
     @set_ev_cls(EventPacketIn, MAIN_DISPATCHER)
     def _switching_handler(self, ev):
@@ -150,21 +155,13 @@ class Switching(app_manager.RyuApp):
             return False
 
         dst_dpid, dst_out_port = self.hosts[eth_dst]
-        path = nx.shortest_path(self.graph, source=dpid, target=dst_dpid)
-        if len(path) < 2:
+        if not nx.has_path(self.graph, dpid, dst_dpid):
             return False
 
-        flow_id = hash(eth_dst) % (2**32)
-        self.flows[flow_id] = []
-        for i in xrange(len(path)-1):
-            out_port = self.link_outport[(path[i], path[i+1])]
-            self.add_switch_flow(flow_id, path[i], eth_dst, out_port)
-
-            flow_ids = self.link_to_flows.setdefault((path[i], path[i+1]), set())
-            flow_ids.add(flow_id)
-
-        self.add_switch_flow(flow_id, dst_dpid, eth_dst, dst_out_port)
-
+        if self.multipath:
+            self.create_mp_flow(dpid, eth_dst, dst_dpid, dst_out_port)
+        else:
+            self.create_flow(dpid, eth_dst, dst_dpid, dst_out_port)
         #Send to last switch directly
         datapath = self.dps[dst_dpid]
         ofproto = datapath.ofproto
@@ -178,6 +175,50 @@ class Switching(app_manager.RyuApp):
         datapath.send_msg(out)
         self.logger.debug("Switching: flow{eth_dst:%s} created" % eth_dst)
         return True
+
+    def create_flow(self, src_dpid, eth_dst, dst_dpid, dst_out_port):
+        if src_dpid == dst_dpid:
+            return
+
+        path = nx.shortest_path(self.graph, source=src_dpid, target=dst_dpid)
+
+        flow_id = hash(eth_dst) % (2**30)
+        self.flows[flow_id] = []
+        for i in xrange(len(path)-1):
+            out_port = self.link_outport[(path[i], path[i+1])]
+            self.add_switch_flow(flow_id, path[i], eth_dst, out_port)
+
+            flow_ids = self.link_to_flows.setdefault((path[i], path[i+1]), set())
+            flow_ids.add(flow_id)
+        self.add_switch_flow(flow_id, dst_dpid, eth_dst, dst_out_port)
+
+    def create_mp_flow(self, src_dpid, eth_dst, dst_dpid, dst_out_port):
+        if src_dpid == dst_dpid:
+            return
+
+        paths = nx.all_shortest_paths(self.graph, source=src_dpid, target=dst_dpid)
+        paths = list(paths)
+        path_count = len(paths)
+        path_len = len(paths[0])
+
+        flow_id = hash(eth_dst) % (2**30)
+        self.flows[flow_id] = []
+        for i in xrange(path_len-1):
+            rules = {}
+            #Aggregrate rules
+            for j in xrange(path_count):
+                out_ports = rules.setdefault(paths[j][i], set())
+                port = self.link_outport[(paths[j][i], paths[j][i+1])]
+                out_ports.add(port)
+
+                flow_ids = self.link_to_flows.setdefault((paths[j][i], paths[j][i+1]), set())
+                flow_ids.add(flow_id)
+            for src_dpid in rules.keys():
+                if len(rules[src_dpid]) > 1:
+                    self.add_mp_switch_flow(flow_id, src_dpid, eth_dst, rules[src_dpid])
+                else:
+                    self.add_switch_flow(flow_id, src_dpid, eth_dst, rules[src_dpid].pop())
+        self.add_switch_flow(flow_id, dst_dpid, eth_dst, dst_out_port)
 
     def add_switch_flow(self, flow_id, dpid, eth_dst, out_port):
         datapath = self.dps[dpid]
@@ -193,6 +234,38 @@ class Switching(app_manager.RyuApp):
         datapath.send_msg(mod)
         self.flows[flow_id].append({"dpid": dpid,
                                     "out_port": out_port,
+                                    "out_group": ofproto.OFPG_ANY,
+                                    "match": match})
+
+    def add_mp_switch_flow(self, flow_id, dpid, eth_dst, out_ports):
+        datapath = self.dps[dpid]
+        ofproto = datapath.ofproto
+        parser = datapath.ofproto_parser
+
+        group_id = flow_id
+        buckets = []
+        for port in out_ports:
+            actions = [parser.OFPActionOutput(port)]
+            buckets.append(parser.OFPBucket(actions=actions))
+
+        gmod = parser.OFPGroupMod(datapath=datapath,
+                                  command=ofproto.OFPGC_ADD,
+                                  type_=ofproto.OFPGT_SELECT,
+                                  group_id=group_id,
+                                  buckets=buckets)
+        datapath.send_msg(gmod)
+
+        priority = 5
+        match = parser.OFPMatch(eth_dst=eth_dst)
+        actions = [parser.OFPActionGroup(group_id, ofproto.OFPGT_SELECT)]
+        inst = [parser.OFPInstructionActions(ofproto.OFPIT_APPLY_ACTIONS, actions)]
+        mod = parser.OFPFlowMod(datapath=datapath, priority=priority,
+                                match=match, instructions=inst, idle_timeout=300)
+        datapath.send_msg(mod)
+        self.flows[flow_id].append({"dpid": dpid,
+                                    "out_port": ofproto.OFPP_ANY,
+                                    "out_group": group_id,
+                                    "out_ports": list(out_ports),
                                     "match": match})
 
     def del_switch_flow(self, dpid, out_port, out_group, match):
@@ -201,6 +274,13 @@ class Switching(app_manager.RyuApp):
         datapath = self.dps[dpid]
         ofproto = datapath.ofproto
         parser = datapath.ofproto_parser
+
+        if out_group != ofproto.OFPG_ANY:
+            gmod = parser.OFPGroupMod(datapath=datapath,
+                                      command=ofproto.OFPGC_DELETE,
+                                      type_=ofproto.OFPGT_SELECT,
+                                      group_id=out_group)
+            datapath.send_msg(gmod)
 
         mod = parser.OFPFlowMod(datapath=datapath,
                                 command=ofproto.OFPFC_DELETE,

@@ -1,6 +1,7 @@
 import pymongo
 import logging
 
+from ryu import cfg
 from ryu.base import app_manager
 from ryu.ofproto import ofproto_v1_3
 from ryu.controller import ofp_event
@@ -14,10 +15,11 @@ from arp_proxy import ARPProxy
 from arp_proxy import EventPacketIn as Event_ARPProxy_PacketIn
 from arp_proxy import EventReload as Event_ARPProxy_Reload
 from arp_proxy import EventDpReg as Event_ARPProxy_DpReg
-from multiswitching import Switching
-from multiswitching import EventPacketIn as Event_Switching_PacketIn
-from multiswitching import EventReload as Event_Switching_Reload
-from multiswitching import EventDpReg as Event_Switching_DpReg
+from switching import Switching
+from switching import EventPacketIn as Event_Switching_PacketIn
+from switching import EventReload as Event_Switching_Reload
+from switching import EventDpReg as Event_Switching_DpReg
+from switching import EventHostReg as Event_Switching_HostReg
 #from streaming import EventPacketIn as Event_Streaming_PacketIn
 #from streaming import EventReload as Event_Streaming_Reload
 
@@ -25,17 +27,21 @@ ETHERNET_FLOOD = "ff:ff:ff:ff:ff:ff"
 ETHERNET_MULTICAST = "ee:ee:ee:ee:ee:ee"
 LLDP = "01:80:c2:00:00:0e"
 
+cfg.CONF.observe_links = True
+
 class Wrapper(app_manager.RyuApp):
     OFP_VERSIONS = [ofproto_v1_3.OFP_VERSION]
     _CONTEXTS = {"switches": switches.Switches,
                  "ARPProxy": ARPProxy,
                  "Switching": Switching}
     _EVENTS = [Event_ARPProxy_PacketIn, Event_ARPProxy_Reload, Event_ARPProxy_DpReg,
-               Event_Switching_PacketIn, Event_Switching_Reload, Event_Switching_DpReg]
+               Event_Switching_PacketIn, Event_Switching_Reload, Event_Switching_DpReg,
+               Event_Switching_HostReg]
 
     def __init__(self, *args, **kwargs):
         super(Wrapper, self).__init__(*args, **kwargs)
         self.logger.setLevel(logging.DEBUG)
+        kwargs["Switching"].enable_multipath()
 
     @set_ev_cls(ofp_event.EventOFPSwitchFeatures, CONFIG_DISPATCHER)
     def _switch_features_handler(self, ev):
@@ -61,6 +67,7 @@ class Wrapper(app_manager.RyuApp):
 
         self.send_event_to_observers(Event_ARPProxy_DpReg(datapath))
         self.send_event_to_observers(Event_Switching_DpReg(datapath))
+
     @set_ev_cls(ofp_event.EventOFPPacketIn, MAIN_DISPATCHER)
     def _packet_in_handler(self, ev):
         msg = ev.msg
@@ -70,10 +77,12 @@ class Wrapper(app_manager.RyuApp):
         pkt = packet.Packet(msg.data)
         arp_protocol = pkt.get_protocol(arp.arp)
 
+        eth_src = pkt.get_protocol(ethernet.ethernet).src
+        eth_dst = pkt.get_protocol(ethernet.ethernet).dst
         if arp_protocol:
+            self.send_event_to_observers(Event_Switching_HostReg(datapath.id, in_port, eth_src))
             self.send_event_to_observers(Event_ARPProxy_PacketIn(msg, pkt))
 
-        eth_dst = pkt.get_protocol(ethernet.ethernet).dst
         if eth_dst == LLDP or eth_dst == ETHERNET_FLOOD:
             #Ignore LLDP packets and flooding packets
             return

@@ -10,7 +10,6 @@ from ryu.topology import switches
 from ryu.topology.event import *
 from ryu.lib.packet import packet, ethernet, arp
 from ryu.lib import addrconv
-from multiswitching import EventHostReg
 
 IPV4_STREAMING = "224.1.0.0"
 ETHERNET_MULTICAST = "ee:ee:ee:ee:ee:ee"
@@ -32,7 +31,6 @@ class EventDpReg(event.EventBase):
 
 class ARPProxy(app_manager.RyuApp):
     OFP_VERSIONS = [ofproto_v1_3.OFP_VERSION]
-    _EVENTS = [EventHostReg]
 
     def __init__(self, *args, **kwargs):
         super(ARPProxy, self).__init__(*args, **kwargs)
@@ -40,6 +38,7 @@ class ARPProxy(app_manager.RyuApp):
         self.logger.setLevel(logging.DEBUG)
         self.dps = {}
         self.arp_table = {}
+        self.dp_to_ip = {}
         self.flood_ports = {}
         self.logger.debug("ARPProxy: init")
 
@@ -48,10 +47,11 @@ class ARPProxy(app_manager.RyuApp):
         msg = ev.switch.to_dict()
         #{"dpid", "ports": [{"hw_addr", "name", "port_no", "dpid"}]}
         dpid = int(msg["dpid"])
-        ports = self.flood_ports.setdefault(dpid, set())
+        self.flood_ports[dpid] = set()
+        self.dp_to_ip[dpid] = set()
         for port in msg["ports"]:
             port_no = int(port["port_no"])
-            ports.add(port_no)
+            self.flood_ports[dpid].add(port_no)
 
     @set_ev_cls(EventSwitchLeave)
     def _switch_leave_handler(self, ev):
@@ -61,6 +61,10 @@ class ARPProxy(app_manager.RyuApp):
             del self.flood_ports[dpid]
         if dpid in self.dps:
             del self.dps[dpid]
+        if dpid in self.dp_to_ip:
+            for ip in self.dp_to_ip[dpid]:
+                del self.arp_table[ip]
+            del self.dp_to_ip[dpid]
 
     @set_ev_cls(EventLinkAdd)
     def _link_add_handler(self, ev):
@@ -107,7 +111,7 @@ class ARPProxy(app_manager.RyuApp):
         dst_ip = arp_protocol.dst_ip
 
         self.arp_table[src_ip] = eth_src
-        self.send_event_to_observers(EventHostReg(datapath.id, in_port, eth_src))
+        self.dp_to_ip[datapath.id].add(src_ip)
         if arp_protocol.opcode == arp.ARP_REPLY:
             return
 
