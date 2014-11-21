@@ -6,29 +6,11 @@ from ryu.controller.handler import CONFIG_DISPATCHER, MAIN_DISPATCHER
 from ryu.controller.handler import set_ev_cls
 from ryu.ofproto import ofproto_v1_3
 from ryu.topology.event import *
+from events import *
 from ryu.lib.packet import packet, ethernet
+from ryu.lib.port_no import port_no_to_str
+from ryu.lib.dpid import dpid_to_str
 
-class EventPacketIn(event.EventBase):
-    def __init__(self, msg, pkt):
-        super(EventPacketIn, self).__init__()
-        self.msg = msg
-        self.pkt = pkt
-
-class EventReload(event.EventBase):
-    def __init__(self):
-        super(EventReload, self).__init__()
-
-class EventDpReg(event.EventBase):
-    def __init__(self, datapath):
-        super(EventDpReg, self).__init__()
-        self.datapath = datapath
-
-class EventHostReg(event.EventBase):
-    def __init__(self, dpid, port, mac):
-        super(EventHostReg, self).__init__()
-        self.mac = mac
-        self.dpid = dpid
-        self.dp_port = port
 
 class Switching(app_manager.RyuApp):
     OFP_VERSIONS = [ofproto_v1_3.OFP_VERSION]
@@ -43,7 +25,7 @@ class Switching(app_manager.RyuApp):
         self.dps = {}
         #dpid -> [{hw_addr, name, port_no, dpid}]
         self.dp_ports = {}
-        #mac -> (dpid, port)
+        #mac -> host
         self.hosts = {}
         #(src, dst) -> out_port
         self.link_outport = {}
@@ -64,7 +46,22 @@ class Switching(app_manager.RyuApp):
 
     @set_ev_cls(EventHostReg, MAIN_DISPATCHER)
     def _host_reg_handler(self, ev):
-        self.hosts[ev.mac] = (ev.dpid, ev.dp_port)
+        self.hosts[ev.host.mac] = ev.host
+
+    @set_ev_cls(EventHostRequest, MAIN_DISPATCHER)
+    def _host_request_handler(self, req):
+        dpid = req.dpid
+        hosts = []
+        if dpid is None:
+            for host in self.hosts.values():
+                hosts.append(host)
+        elif dpid in self.dps:
+            for host in self.hosts.values():
+                if host.dpid == dpid:
+                    hosts.append(host)
+
+        rep = EventHostReply(req.src, hosts)
+        self.reply_to_request(req, rep)
 
     @set_ev_cls(EventSwitchEnter)
     def _switch_enter_handler(self, ev):
@@ -84,7 +81,7 @@ class Switching(app_manager.RyuApp):
         if dpid in self.graph.nodes():
             self.graph.remove_node(dpid)
         for mac in self.hosts.keys():
-            if dpid == self.hosts[mac][0]:
+            if dpid == self.hosts[mac].dpid:
                 del self.hosts[mac]
         for (src, dst) in self.link_to_flows.keys():
             if src == dpid or dst == dpid:
@@ -140,7 +137,7 @@ class Switching(app_manager.RyuApp):
             self.del_switch_flow(dpid, out_port, out_group, match)
         del self.flows[flow_id]
 
-    @set_ev_cls(EventPacketIn, MAIN_DISPATCHER)
+    @set_ev_cls(Event_Switching_PacketIn, MAIN_DISPATCHER)
     def _switching_handler(self, ev):
         msg = ev.msg
         pkt = ev.pkt
@@ -154,7 +151,9 @@ class Switching(app_manager.RyuApp):
             self.logger.debug("Switching: %s has not been discovered" % eth_dst)
             return False
 
-        dst_dpid, dst_out_port = self.hosts[eth_dst]
+        host = self.hosts[eth_dst]
+        dst_dpid = host.dpid
+        dst_out_port = host.port_no
         if not nx.has_path(self.graph, dpid, dst_dpid):
             return False
 
@@ -289,3 +288,4 @@ class Switching(app_manager.RyuApp):
                                 match=match,
                                 instructions=[])
         datapath.send_msg(mod)
+

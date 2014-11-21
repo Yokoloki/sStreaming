@@ -7,27 +7,13 @@ from ryu.controller.handler import CONFIG_DISPATCHER, MAIN_DISPATCHER
 from ryu.controller.handler import set_ev_cls
 from ryu.ofproto import ofproto_v1_3
 from ryu.topology import switches
-from ryu.topology.event import *
 from ryu.lib.packet import packet, ethernet, arp
 from ryu.lib import addrconv
+from ryu.topology.event import *
+from events import Event_ARP_PacketIn, EventDpReg
 
 IPV4_STREAMING = "224.1.0.0"
 ETHERNET_MULTICAST = "ee:ee:ee:ee:ee:ee"
-
-class EventPacketIn(event.EventBase):
-    def __init__(self, msg, pkt):
-        super(EventPacketIn, self).__init__()
-        self.msg = msg
-        self.pkt = pkt
-
-class EventReload(event.EventBase):
-    def __init__(self):
-        super(EventReload, self).__init__()
-
-class EventDpReg(event.EventBase):
-    def __init__(self, datapath):
-        super(EventDpReg, self).__init__()
-        self.datapath = datapath
 
 class ARPProxy(app_manager.RyuApp):
     OFP_VERSIONS = [ofproto_v1_3.OFP_VERSION]
@@ -92,7 +78,7 @@ class ARPProxy(app_manager.RyuApp):
         if dst_dpid in self.flood_ports:
             self.flood_ports[dst_dpid].add(dst_port_no)
 
-    @set_ev_cls(EventPacketIn, MAIN_DISPATCHER)
+    @set_ev_cls(Event_ARP_PacketIn, MAIN_DISPATCHER)
     def _arp_proxy_handler(self, ev):
         msg = ev.msg
         pkt = ev.pkt
@@ -111,6 +97,7 @@ class ARPProxy(app_manager.RyuApp):
         dst_ip = arp_protocol.dst_ip
 
         self.arp_table[src_ip] = eth_src
+
         self.dp_to_ip[datapath.id].add(src_ip)
         if arp_protocol.opcode == arp.ARP_REPLY:
             return
