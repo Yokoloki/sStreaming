@@ -1,10 +1,9 @@
 import struct
 import time
 
-struct1 = struct.Struct('q6I992s')
-
 class ControllerOrder(object):
-    def __init__(self, flow_id, bitrate, period, dstPort, dstIP1, dstIP2, dstIP3, dstIP4, message = ""):
+    def __init__(self, flow_id, bitrate, period, dstPort, 
+        dstIP1, dstIP2, dstIP3, dstIP4, message = ""):
         self.flow_id = flow_id
         self.bitrate = bitrate
         self.period = period
@@ -16,10 +15,12 @@ class ControllerOrder(object):
         self.message = message
 
     def getData(self):
-        return [self.flow_id, self.bitrate, self.period, self.dstPort, self.dstIP1, self.dstIP2, self.dstIP3, self.dstIP4, self.message]
+        return [self.flow_id, self.bitrate, self.period, self.dstPort, 
+        self.dstIP1, self.dstIP2, self.dstIP3, self.dstIP4, self.message]
 
 class streamPacket(object):
-	def __init__(self, flow_id, block_id, srcPort = 9998, srcIP1 = 127, srcIP2 = 0, srcIP3 = 0, srcIP4 = 1, message = ""):
+	def __init__(self, flow_id, block_id, srcPort = 9998, 
+        srcIP1 = 127, srcIP2 = 0, srcIP3 = 0, srcIP4 = 1, message = ""):
 		self.flow_id = flow_id
 		self.block_id = block_id
 		self.srcIP1 = srcIP1
@@ -30,18 +31,24 @@ class streamPacket(object):
 		self.message = message
 
 	def getData(self):
-		return [self.flow_id, self.block_id, self.srcPort, self.srcIP1, self.srcIP2, self.srcIP3, self.srcIP4, self.message]
+		return [self.flow_id, self.block_id, self.srcPort, 
+        self.srcIP1, self.srcIP2, self.srcIP3, self.srcIP4, self.message]
 
 
-def generatePacket(flow_id, block_id, srcPort = 9998, srcIP1 = 127, srcIP2 = 0, srcIP3 = 0, srcIP4 = 1, message = ""):
-	packet = streamPacket(flow_id, block_id, srcPort, srcIP1, srcIP2, srcIP3, srcIP4, message)
+def generatePacket(flow_id, block_id, srcPort = 9998, 
+    srcIP1 = 127, srcIP2 = 0, srcIP3 = 0, srcIP4 = 1, message = ""):
+
+	packet = streamPacket(flow_id = flow_id, block_id = block_id, srcPort = srcPort, 
+        srcIP1 = srcIP1, srcIP2 = srcIP2, srcIP3 = srcIP3, 
+        srcIP4 = srcIP4, message = message)
 	return packet
 
 def generateNewStream(order, clientSocket):
-    wholeTime = time.clock()
     block_id = 0L
+    struct1 = struct.Struct('q6I992s')
 
-    dstIP = "%d.%d.%d.%d"%(order.dstIP1, order.dstIP2, order.dstIP3, order.dstIP4)
+    dstIP = "%d.%d.%d.%d"%(order.dstIP1, order.dstIP2, 
+        order.dstIP3, order.dstIP4)
 
     #when generate a packet, we can add the paras: srcPort, srcIP and message
     value = generatePacket(order.flow_id, block_id).getData()
@@ -55,6 +62,5 @@ def generateNewStream(order, clientSocket):
         endTime = time.clock()
         time.sleep(1 - endTime + startTime)
         print block_id
-    print time.clock() - wholeTime
     return block_id
 
