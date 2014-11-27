@@ -10,23 +10,27 @@ from mininet.node import RemoteController, Switch, OVSSwitch
 from mininet.cli import CLI
 from mininet.log import setLogLevel, info
 
+
 def parseJSON(args):
     with file(args.f) as f:
         topo = json.load(f)
     return topo
 
+
 def genNet(args):
     print "Generator Mode has not been implemented yet."
     exit(1)
 
+
 def getPortNo(intf):
     return int(re.match("[s|h](\d+)-eth(\d+)", str(intf)).group(2))
+
 
 def exportToDB(net, as_map):
     conn = pymongo.Connection("127.0.0.1")
     conn.drop_database("sStreaming")
     db = conn["sStreaming"]
-    db.Version.insert({"Version": random.randint(1, 2**32)})
+    db.Version.insert({"Version": random.randint(1, 2 ** 32)})
 
     for host in net.hosts:
         name = str(host)
@@ -36,7 +40,8 @@ def exportToDB(net, as_map):
                         "as": as_})
         for port_no in host.intfs.keys():
             intf = host.intfs[port_no]
-            if not intf.mac: continue
+            if not intf.mac:
+                continue
             ip, pLen = host.params["ip"].split("/")
             db.Intf.insert({"node": name,
                             "port_no": port_no,
@@ -52,7 +57,8 @@ def exportToDB(net, as_map):
                         "dpid": int(switch.dpid, 16)})
         for port_no in switch.intfs.keys():
             intf = switch.intfs[port_no]
-            if not intf.mac: continue
+            if not intf.mac:
+                continue
             db.Intf.insert({"node": name,
                             "dpid": int(switch.dpid, 16),
                             "port_no": port_no,
@@ -69,6 +75,7 @@ def exportToDB(net, as_map):
             db.Node.update({"name": str(intf.node)},
                            {"$set": {"type": "ext"}})
 
+
 def deploy(topo):
     info("Description: %s\n" % topo["summary"]["Description"])
     info("Gen-time:    %s\n" % topo["summary"]["Gen-time"])
@@ -81,6 +88,7 @@ def deploy(topo):
 
     info("*** Adding switch\n")
     switches = {}
+    hosts = []
     as_map = {}
     ext_switches = set()
     ip_base = 1
@@ -99,6 +107,7 @@ def deploy(topo):
             host_ip = "172.18.%d.%d/16" % (ip_base/256, ip_base%256)
             ip_base += 1
             host = net.addHost('h%d' % node_info["id"], ip=host_ip)
+            hosts.append(host)
             as_map[str(host)] = node_info["as"]
             link = net.addLink(host, switch)
             ext_switches.add(node_info["id"])
@@ -108,18 +117,23 @@ def deploy(topo):
     for link_info in topo["links"]:
         if "args" not in link_info:
             link = net.addLink(switches[link_info["src"]],
-                        switches[link_info["dst"]],
-                        cls=TCLink,
-                        **topo["defaults"]["link"])
+                               switches[link_info["dst"]],
+                               cls=TCLink,
+                               **topo["defaults"]["link"])
         else:
             link = net.addLink(switches[link_info["src"]],
-                        switches[link_info["dst"]],
-                        cls=TCLink,
-                        **link_info["args"])
-    #exportToDB(net, as_map)
+                               switches[link_info["dst"]],
+                               cls=TCLink,
+                               **link_info["args"])
+    # exportToDB(net, as_map)
     info("*** Starting network\n")
     net.start()
     c0.start()
+
+    info("*** Configuring hosts\n")
+    for host in hosts:
+        host.cmd("sysctl net.ipv6.conf.all.disable_ipv6=1")
+        host.cmd("sysctl net.ipv4.icmp_echo_ignore_broadcasts=0")
     CLI(net)
 
     info("*** Stopping network\n")

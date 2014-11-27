@@ -84,7 +84,14 @@ elem.update = function () {
     this.link = this.link.data(topo.links);
     this.link.exit().remove();
     this.link.enter().append("line")
-        .attr("class", "link");
+        .attr("class", "link")
+    this.link.attr("style", function(d) {
+            if(d.target.type == "host")
+                link_pri = d.source.pri;
+            else
+                link_pri = Math.min(d.source.pri, d.target.pri);
+            return "stroke: hsl(" + link_pri*15 +", 100%, 50%)";
+        })
 
     this.node = this.node.data(topo.nodes);
     this.node.exit().remove();
@@ -124,7 +131,7 @@ elem.update = function () {
 };
 
 function is_valid_link(link) {
-    return (link.src.dpid < link.dst.dpid)
+    return (link.src.dpid < link.dst.dpid);
 }
 
 var topo = {
@@ -141,6 +148,7 @@ var topo = {
             for (var i = 0; i < nodes.length; i++) {
                 console.log("add switch: " + JSON.stringify(nodes[i]));
                 nodes[i].type = "switch";
+                nodes[i].pri = 3;
                 this.nodes.push(nodes[i]);
             }
         }
@@ -229,6 +237,17 @@ var topo = {
             }
         }
     },
+    update_switches_pri: function(switches) {
+        for (var i = 0; i < switches.length; i++) {
+            console.log("update switch priority: " + JSON.stringify(switches[i]));
+            if(!switches[i].dpid in this.node_index){
+                console.log("update error: "+switches[i].dpid+" not found");
+                continue;
+            }
+            sw_idx = this.node_index[switches[i].dpid];
+            this.nodes[sw_idx].pri = switches[i].pri;
+        }
+    },
     get_link_index: function (link) {
         for (var i = 0; i < this.links.length; i++) {
             if (link.src.dpid == this.links[i].port.src.dpid &&
@@ -310,8 +329,7 @@ var rpc = {
         var switches = [];
         for(var i=0; i < params.length; i++){
             switches.push({
-                "dpid":params[i].dpid,
-                "ports":params[i].ports
+                "dpid":params[i].dpid
             });
         }
         topo.add_nodes("switch", switches);
@@ -322,8 +340,7 @@ var rpc = {
         var switches = [];
         for(var i=0; i < params.length; i++){
             switches.push({
-                "dpid":params[i].dpid,
-                "ports":params[i].ports
+                "dpid":params[i].dpid
             });
         }
         topo.delete_switches(switches);
@@ -350,6 +367,18 @@ var rpc = {
             });
         }
         topo.add_nodes("host", hosts);
+        elem.update();
+        return "";
+    },
+    event_switch_pri_changed: function(params) {
+        var switches = [];
+        for(var i=0; i < params.length; i++){
+            switches.push({
+                "dpid": params[i].dpid,
+                "pri": params[i].pri
+            });
+        }
+        topo.update_switches_pri(switches);
         elem.update();
         return "";
     }

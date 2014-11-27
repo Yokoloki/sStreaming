@@ -14,9 +14,8 @@
 }
 
 .link {
-    stroke: #090909;
-    stroke-opacity: .6;
-    stroke-width: 2px;
+    stroke-opacity: .8;
+    stroke-width: 5px;
 }
 
 .port circle {

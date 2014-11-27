@@ -1,181 +1,316 @@
-import pymongo
 import logging
 import networkx as nx
 from ryu.base import app_manager
-from ryu.controller import ofp_event, event
-from ryu.controller.handler import CONFIG_DISPATCHER, MAIN_DISPATCHER
+from ryu.controller.handler import MAIN_DISPATCHER
 from ryu.controller.handler import set_ev_cls
 from ryu.ofproto import ofproto_v1_3
-from ryu.lib.packet import packet, ethernet
 
-IPV4_STREAMING = "224.1.0.0"
+from ryu.topology.events import *
+from events import *
+from addrs import *
+from algorithms import *
 
-class EventPacketIn(event.EventBase):
-    def __init__(self, msg, pkt):
-        super(EventPacketIn, self).__init__()
-        self.msg = msg
-        self.pkt = pkt
 
-class EventReload(event.EventBase):
-    def __init__(self):
-        super(EventReload, self).__init__()
-
-class EventRegDp(event.EventBase):
-    def __init__(self, datapath):
-        super(EventRegDp, self).__init__()
-        self.datapath = datapath
-
-class Switching(app_manager.RyuApp):
+class Streaming(app_manager.RyuApp):
     OFP_VERSIONS = [ofproto_v1_3.OFP_VERSION]
 
     def __init__(self, *args, **kwargs):
-        super(Switching, self).__init__(*args, **kwargs)
-        self.logger = logging.getLogger('Switching')
+        super(Streaming, self).__init__(*args, **kwargs)
+        self.logger = logging.basicConfig(format="Streaming: %(message)s")
         self.logger.setLevel(logging.DEBUG)
-        self.logger.debug("Switching: init")
-        #dpid -> datapath
-        self.dps = {}
-        #nx.Graph for path calculation
+        # nx.Graph for path calculation
         self.graph = nx.Graph()
+        # Shortest path for the whole network
+        self.paths = None
+        self.pathlens = None
+        # dpid -> port -> host
+        self.hosts = {}
+        # (src, dst) -> out_port
+        self.link_outport = {}
+        # Dict containing information about stream
+        # stream_id -> src{dpid, in_port}
+        #              eth_dst
+        #              ip_dst
+        #              rate
+        #              clients{dpid->out_ports}
+        #              curr_flows{dpid->(prev, in_port, out_ports)}
+        #              links
+        self.streams = {}
+        # link -> stream_id
+        self.link_to_streams = {}
+        # streams that fail to build due to topology change
+        self.failed_streams = set()
+        self.algorithm = Shortest_Path_Heuristic()
 
-    @set_ev_cls(EventReload, CONFIG_DISPATCHER)
-    def _reload_handler(self, ev):
-        self.logger.debug("Switching: _reload_handler")
-        del self.dps
-        del self.graph
-        del self.name_map
-        del self.dpid_map
-        del self.mac_map
-        del self.port_map
+    def reg_DPSet(self, dpset):
+        self.dpset = dpset
 
-        self.dps = {}
-        self.graph = nx.Graph()
-        self.name_map = {}
-        self.dpid_map = {}
-        self.mac_map = {}
-        self.port_map = {}
+    @set_ev_cls(EventHostReg)
+    def _host_reg_handler(self, ev):
+        dpid = ev.host.dpid
+        port_no = ev.host.port_no
+        self.hosts[dpid][port_no] = host
 
-        nodes = self.db.Node.find()
-        for node in nodes:
-            self.graph.add_node(node["name"])
-            if "dpid" in node:
-                self.dpid_map[node["name"]] = node["dpid"]
-                self.name_map[node["dpid"]] = node["name"]
-        intfs = self.db.Intf.find()
-        for intf in intfs:
-            self.mac_map[intf["mac"]] = intf["node"]
+    @set_ev_cls(EventSwitchEnter)
+    def _switch_enter_handler(self, ev):
+        msg = ev.switch.to_dict()
+        dpid = int(msg["dpid"], 16)
+        self.graph.add_node(dpid)
+        self.hosts[dpid] = {}
 
-        links = self.db.Link.find()
-        for link in links:
-            src_name = link["src_name"]
-            dst_name = link["dst_name"]
-            self.graph.add_edge(src_name, dst_name)
-            self.port_map[(src_name, dst_name)] = link["src_port"]
-            self.port_map[(dst_name, src_name)] = link["dst_port"]
+    @set_ev_cls(EventSwitchLeave)
+    def _switch_leave_handler(self, ev):
+        msg = ev.switch.to_dict()
+        dpid = int(msg["dpid"], 16)
+        if dpid in self.graph.nodes():
+            self.graph.remove_node(dpid)
+        if dpid in self.hosts:
+            del self.hosts[dpid]
+        inf_streams = set()
+        for (src, dst) in self.link_to_streams.keys():
+            if (src == dpid) or (dst == dpid):
+                inf_streams |= self.link_to_streams[(src, dst)]
+        for stream_id in inf_stream:
+            self.cal_flows_for_stream(stream_id, ev)
+
+    @set_ev_cls(EventLinkAdd)
+    def _link_add_handler(self, ev):
+        msg = ev.link.to_dict()
+        src_dpid = int(msg["src"]["dpid"], 16)
+        src_port_no = int(msg["src"]["port_no"], 16)
+        dst_dpid = int(msg["dst"]["dpid"], 16)
+        dst_port_no = int(msg["dst"]["port_no"], 16)
+        self.link_outport[(src_dpid, dst_dpid)] = src_port_no
+        self.link_outport[(dst_dpid, src_dpid)] = dst_port_no
+        self.graph.add_edge(src_dpid, dst_dpid)
+        if src_dpid < dst_dpid:
+            self.link_to_streams[(src_dpid, dst_dpid)] = set()
+            for stream_id in self.failed_streams.copy():
+                self.cal_flows_for_stream(stream_id, ev)
+
+    @set_ev_cls(EventLinkDelete)
+    def _link_del_handler(self, ev):
+        msg = ev.link.to_dict()
+        src_dpid = int(msg["src"]["dpid"], 16)
+        # src_port_no = int(msg["src"]["port_no"], 16)
+        dst_dpid = int(msg["dst"]["dpid"], 16)
+        # dst_port_no = int(msg["dst"]["port_no"], 16)
+        if (src_dpid, dst_dpid) in self.link_outport:
+            del self.link_outport[(src_dpid, dst_dpid)]
+        if (dst_dpid, src_dpid) in self.link_outport:
+            del self.link_outport[(dst_dpid, src_dpid)]
+        if (src_dpid, dst_dpid) in self.graph.edges() or \
+                (dst_dpid, src_dpid) in self.graph.edges():
+                    self.graph.remove_edge(src_dpid, dst_dpid)
+        inf_stream = self.link_to_streams.get((src_dpid, dst_dpid), set()).copy()
+        for stream_id in inf_stream:
+            self.cal_flows_for_stream(stream_id, ev)
+
+    @set_ev_cls(EventStreamSourceEnter)
+    def _source_enter_handler(self, ev):
+        self.streams[ev.stream_id] = {"rate": ev.rate,
+                                      "eth_dst": ev.eth_dst,
+                                      "ip_dst": ev.ip_dst,
+                                      "clients": {},
+                                      "curr_flows": {},
+                                      "links": set()}
+        self.streams[ev.stream_id]["src"] = {"dpid": ev.src_dpid,
+                                             "in_port": ev.src_in_port}
+
+    @set_ev_cls(EventStreamSourceLeave)
+    def _source_leave_handler(self, ev):
+        stream_id = ev.stream_id
+        if stream_id not in self.streams:
+            self.logger.info("source leaving a non-existing stream%d",
+                             stream_id)
+            return False
+        curr_flows = self.streams[ev.stream_id]["curr_flows"]
+        # Clean up
+        for dpid, flow in curr_flows.items():
+            self.mod_stream_flow(dpid, stream_id, flow, None)
+        for link in self.streams[stream_id]["links"]:
+            if link in self.link_to_streams:
+                self.link_to_streams[link].discard(stream_id)
+        del self.streams[ev.stream_id]
+
+    @set_ev_cls(EventStreamClientEnter)
+    def _client_enter_handler(self, ev):
+        stream_id = ev.stream_id
+        if stream_id not in self.streams:
+            self.logger.info("client joining a non-existing stream%d",
+                             stream_id)
+            return False
+        client_ports = self.streams[stream_id]["clients"].setdefault(ev.dpid, set())
+        client_ports.add(ev.out_port)
+        self.cal_flows_for_stream(stream_id, ev)
+
+    @set_ev_cls(EventStreamClientLeave)
+    def _client_leave_handler(self, ev):
+        stream_id = ev.stream_id
+        if stream_id not in self.streams:
+            self.logger.info("client leaving a non-existing stream%d",
+                             stream_id)
+            return False
+        self.cal_flows_for_stream(stream_id, ev)
+        client_ports = self.streams[stream_id]["clients"][ev.dpid]
+        client_ports.remove(ev.out_port)
+        if len(client_ports) == 0:
+            del self.streams[stream_id]["clients"][ev.dpid]
 
     @set_ev_cls(EventPacketIn, MAIN_DISPATCHER)
-    def _switching_handler(self, ev):
+    def _streaming_handler(self, ev):
         msg = ev.msg
         pkt = ev.pkt
 
-        datapath = msg.datapath
-        ofproto = datapath.ofproto
-        parser = datapath.ofproto_parser
+        # datapath = msg.datapath
+        # ofproto = datapath.ofproto
+        # parser = datapath.ofproto_parser
         in_port = msg.match["in_port"]
 
-        dpid = datapath.id
-        dst_ip = pkt.get_protocol(ipv4.ipv4)
+        # dpid = datapath.id
+        dst_ip = pkt.get_protocol(ipv4.ipv4).dst
         stream_id = get_stream_id(dst_ip)
 
-        if not self.streamSimulator.hasReceiver(stream_id):
-            #DROP ENTRY
-            pass
-        #GROUP ENTRY
-        self.cal_paths_for_stream(stream_id)
-        #FORWARD DATA
-        data = None
-        if msg.buffer_id == ofproto.OFP_NO_BUFFER:
-            data = msg.data
-        actions = [parser.OFPActionGroup(stream_id, ofproto.OFPGT_ALL)])]
-        out = parser.OFPPacketOut(datapath=datapath,
-                                  buffer_id=msg.buffer_id,
-                                  in_port=in_port,
-                                  actions=actions,
-                                  data=data)
-        datapath.send_msg(out)
-        return True
+        if stream_id not in self.streams:
+            self.logger.info("recv unregistered stream%d", stream_id)
+            return False
+        if dpid not in self.streams[stream_id]["curr_flows"]:
+            self.logger.info("packet of stream %d is not "
+                             "supposed to recv in dp%d",
+                             stream_id, dpid)
+            return False
 
-    @set_ev_cls(EventRegDp, CONFIG_DISPATCHER)
-    def _regdp_handler(self, ev):
-        datapath = ev.datapath
-        self.dps[datapath.id] = datapath
+        flow = self.streams[stream_id]["curr_flows"][dpid]
+        if in_port != flow["in_port"]:
+            self.logger.info("packet of stream%d is supposed "
+                             "to recv from %d:%d, not %d:%d",
+                             stream_id, dpid, flow["in_port"], dpid, in_port)
+            return False
+        self.logger.info("flow of stream%d is not installed as excepted",
+                         stream_id)
+        return False
 
-    def add_stream(self, dpid, stream_id, eth_dst, out_ports):
-        datapath = self.dps[dpid]
+    def update_paths(self):
+        self.paths = nx.shortest_path(self.graph)
+        self.pathlens = {}
+        for src in self.paths:
+            self.pathlens[src] = {}
+            for dst in self.paths[src]:
+                self.pathlens[src][dst] = len(self.paths[src][dst])
+
+    def cal_flows_for_stream(self, stream_id, ev):
+        if isinstance(EventSwitchBase, ev) or isinstance(EventLinkBase, ev):
+            self.update_paths()
+        for link in self.streams[stream_id]["links"]:
+            if link in self.link_to_streams[link]:
+                self.link_to_streams[link].discard(stream_id)
+        self.streams[stream_id]["links"] = set()
+        new_flows = self.algorithm.cal(self.streams[stream_id],
+                                       self.link_outport,
+                                       self.paths, self.pathlens, ev)
+        if new_flows is not None:
+            to_mod_set = set()
+            to_mod_set.update(self.streams[stream_id]["curr_flows"].keys())
+            to_mod_set.update(new_flows.keys())
+            for dpid in to_mod_set:
+                prev_flow = self.streams[stream_id]["curr_flows"].get(dpid)
+                curr_flow = new_flows.get(dpid)
+                self.mod_stream_flow(dpid, stream_id, prev_flow, curr_flow)
+            for dpid, flow in new_flows.items():
+                if flow["prev"] != -1:
+                    src, dst = dpid, flow["prev"]
+                    if src > dst:
+                        src, dst = dst, src
+                    self.streams[stream_id]["links"].add((src, dst))
+                    self.link_to_streams[(src, dst)].add(stream_id)
+            if stream_id in self.failed_streams:
+                self.failed_streams.remove(stream_id)
+        else:
+            new_flows = {}
+            src_dpid = self.streams[stream_id]["src"]["dpid"]
+            src_in_port = self.streams[stream_id]["src"]["in_port"]
+            new_flows[src_dpid] = {"prev": -1,
+                                   "in_port": src_in_port,
+                                   "out_ports": []}
+            for dpid in self.streams[stream_id]["curr_flows"].keys():
+                prev_flow = self.streams[stream_id]["curr_flows"][dpid]
+                curr_flow = new_flows.get(dpid)
+                self.mod_stream_flow(dpid, stream_id, prev_flow, curr_flow)
+            self.failed_streams.add(stream_id)
+        self.streams[stream_id]["curr_flows"] = new_flows
+
+    # flow = {in_port, set(out_ports)}
+    def mod_stream_flow(self, dpid, stream_id, prev_flow, curr_flow):
+        datapath = self.dpset.get(dpid)
         ofproto = datapath.ofproto
         parser = datapath.ofproto_parser
+        if datapath is None:
+            return False
+        if prev_flow is None:
+            prev_flow = {"in_port": -1, "out_ports": []}
+        if curr_flow is None:
+            curr_flow = {"in_port": -1, "out_ports": []}
 
-        buckets = []
-        for port in out_ports:
-            actions = [parser.OFPActionOutput(port)]
-            buckets.append(parser.OFPBucket(actions=actions))
-        if self.streamSimulator.isReceiver(stream_id, dpid):
-            eth_src = ""
-            eth_dst = ""
-            ipv4_dst = ""
-            actions = [parser.OFPActionSetField(eth_src=eth_src),
-                       parser.OFPActionSetField(eth_dst=eth_dst),
-                       parser.OFPActionSetField(ipv4_dst=ipv4_dst),
-                       parser.OFPActionOutput(1)]
-            buckets.append(parser.OFPBucket(actions=actions))
+        prev_in_port = prev_flow["in_port"]
+        curr_in_port = curr_flow["in_port"]
+        prev_out_ports = prev_flow["out_ports"]
+        curr_out_ports = curr_flow["out_ports"]
 
-        gmod = parser.OFPGroupMod(datapath=datapath,
-                                  command=ofproto.OFPGC_ADD,
-                                  type_=ofproto.OFPGT_ALL,
-                                  group_id=stream_id,
-                                  buckets=buckets)
-        datapath.send_msg(gmod)
+        if len(prev_out_ports) != 0:
+            # Del existing group
+            gmod = parser.OFPGroupMod(datapath=datapath,
+                                      command=ofproto.OFPGC_DEL,
+                                      type_=ofproto.OFPGT_ALL,
+                                      group_id=stream_id)
+            datapath.send_msg(gmod)
+        if len(curr_out_ports) != 0:
+            # Add new group
+            buckets = []
+            for port in curr_out_ports:
+                actions = [parser.OFPActionOutput(port)]
+                if port in self.hosts[dpid]:
+                    host = self.hosts[dpid][port]
+                    eth_dst = host.mac
+                    ipv4_dst = host.ip
+                    actions.append(parser.OFPActionSetField(eth_dst=eth_dst))
+                    actions.append(parser.OFPActionSetField(ipv4_dst=ipv4_dst))
+                buckets.append(parser.OFPBucket(actions=actions))
+            gmod = parser.OFPGroupMod(datapath=datapath,
+                                      command=ofproto.OFPGC_ADD,
+                                      type_=ofproto.OFPGT_ALL,
+                                      group_id=stream_id,
+                                      buckets=buckets)
+            datapath.send_msg(gmod)
 
-        priority = 5
-        match = parser.OFPMatch(in_port=in_port, eth_dst=eth_dst)
-        actions = [parser.OFPActionGroup(stream_id, ofproto.OFPGT_ALL)]
-        inst = [parser.OFPInstructionActions(ofproto.OFPIT_APPLY_ACTIONS, actions)]
-        mod = parser.OFPFlowMod(datapath=datapath, priority=priority,
-                                match=match, instructions=inst, idle_timeout=300)
-        datapath.send_msg(mod)
+        if prev_in_port != -1:
+            # Del first
+            out_port = ofproto.OFPP_ANY
+            out_group = ofproto.OFPG_ANY
+            if len(prev_out_ports) != 0:
+                out_group = stream_id
+            match = parser.OFPMatch(in_port=curr_in_port, eth_dst=eth_dst)
+            mod = parser.OFPFlowMod(datapath=datapath,
+                                    command=ofproto.OFPFC_DELETE,
+                                    out_port=out_port,
+                                    out_group=out_group,
+                                    match=match,
+                                    instructions=[])
+            datapath.send_msg(mod)
 
-    def cal_paths_for_stream(self, stream_id):
-        return
-        #path calculation algorithm
-        for i in xrange(path_len-1):
-            rules = {}
-            for j in xrange(path_count):
-                out_ports = rules.setdefault(paths[j][i], set())
-                port = self.port_map[(paths[j][i], paths[j][i+1])]
-                out_ports.add(port)
-            for src in rules.keys():
-                self.add_multiswitch_flow(self.dpid_map[src],
-                                               eth_dst,
-                                               rules[src])
+        if curr_in_port != -1:
+            # Add new flow
+            priority = 5
+            match = parser.OFPMatch(in_port=in_port, eth_dst=eth_dst)
+            actions = []
+            if len(curr_out_ports) != 0:
+                actions.append(parser.OFPActionGroup(stream_id,
+                                                     ofproto.OFPGT_ALL))
+            inst = [parser.OFPInstructionActions(ofproto.OFPIT_APPLY_ACTIONS,
+                                                 actions)]
+            mod = parser.OFPFlowMod(datapath=datapath,
+                                    priority=priority,
+                                    match=match,
+                                    instructions=inst)
+            datapath.send_msg(mod)
 
-def ipv4_text_to_int(ip_text):
-    if ip_text == 0:
-        return 0
-    assert isinstance(ip_text, str)
-    return struct.unpack('!I', addrconv.ipv4.text_to_bin(ip_text))[0]
-
-def ipv4_int_to_text(ip_int):
-    assert isinstance(ip_int, (int, long))
-    return addrconv.ipv4.bin_to_text(struct.pack('!I', ip_int))
-
-def is_streaming(addr):
-    addr_int = ipv4_text_to_int(addr)
-    masked_int = addr_bin & 0xffff0000
-    masked_text = ipv4_int_to_text(masked_int)
-    return masked_text == IPV4_STREAMING
-
-def get_stream_id(addr):
-    assert is_streaming(addr)
-    addr_int = ipv4_text_to_int(addr)
-    stream_id = addr_bin & 0x0000ffff
-    return stream_id
+        return True
