@@ -7,7 +7,7 @@ import logging
 from ControllerOrder import *
 from eventlet import greenthread
 
-
+listenerPort = 9999
 if __name__ == "__main__":
     struct1 = struct.Struct('8i992s')
     threadMap = {}
@@ -15,11 +15,11 @@ if __name__ == "__main__":
     print 'Controller Order listener socket listening on port 9999'
 
     listener = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    listener.bind(("172.18.219.60", 9999))
-    listener.settimeout(0.95)
-    #listener = eventlet.listen(("172.18.219.60", 9999))
+    listener.bind(("", listenerPort))
+    listener.settimeout(SOCKET_SLEEP_TIME)
+
     pool = eventlet.GreenPool(10000)
-    counter = 0
+
     while True:
         try:
             message, addr = listener.recvfrom(BUFF_SIZE)
@@ -32,10 +32,11 @@ if __name__ == "__main__":
                 listener.sendto("Server busy, Reject order", addr)
                 continue
             #if period <= 0 , try to stop the specific streaming with flow_id
-            if unpacked_data[2] <=0 :
+            if unpacked_data[2] < 0 :
                 print 'Stop Streaming order received, try to stop stream: %d'%(unpacked_data[0])
                 
                 stopThread(threadMap, unpacked_data[0])
+                del threadMap[unpacked_data[0]]
                 listener.sendto("stop streaming order archieved", addr)
                 continue;
 
@@ -72,4 +73,4 @@ if __name__ == "__main__":
             listener.close()
             break
         finally:
-            greenthread.sleep(0)
+            greenthread.sleep(SOCKET_SLEEP_TIME)

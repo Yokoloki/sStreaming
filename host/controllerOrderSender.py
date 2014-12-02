@@ -13,10 +13,11 @@ if __name__ == "__main__":
 	#[flow_id, bitrate, period, dstPort, dstIP1, dstIP2, dstIP3, dstIP4, message = ""]
 	L = range(5)
 	for i in L[::1]:
-		order = ControllerOrder(flow_id = i, bitrate = 800 - i * 100, period = 30 * i + 300, 
-			dstPort = 9999, dstIP1 = 172, dstIP2 = 18, 
-			dstIP3 = 219, dstIP4 = 5)
+		order = ControllerOrder(flow_id = i, bitrate = 500 + i * 50, period = 0, 
+			dstPort = 9998, dstIP1 = 172, dstIP2 = 18, 
+			dstIP3 = 219, dstIP4 = 60)
 		value = order.getData()
+		print value
 		struct1 = struct.Struct('8i992s')
 
 		pack_data = struct1.pack(*value)
