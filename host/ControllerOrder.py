@@ -81,7 +81,7 @@ def generateAndSendNewStream(order, clientSocket, threadMap):
         time_slot += 1
 
         time_slice = 50
-        time_sleep = SOCKET_SLEEP_TIME - 0.014 * len(threadMap)
+        time_sleep = SOCKET_SLEEP_TIME - 0.01 * len(threadMap)
         time_interval = order.bitrate / time_slice
 
         for j in range(order.bitrate):
