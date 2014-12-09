@@ -4,10 +4,10 @@ var CONF = {
         height: 40
     },
     force: {
-        width: 960,
-        height: 500,
+        width: 1024,
+        height: 650,
         dist: 200,
-        charge: -600
+        charge: -900
     }
 };
 
@@ -29,19 +29,74 @@ function dpid_to_int(dpid) {
     return Number("0x" + dpid);
 }
 
+var streams = {
+    selected_id: -1,
+    sourcing_table: {},
+    ids: [],
+    menu: d3.select("#menu").append("select")
+            .attr("class", "form-control")
+            .on("change", _menu_select_changed)
+}
+streams.update_table = function(host_mac, new_ids) {
+    this.sourcing_table[host_mac] = new_ids;
+    var id_set = {};
+    for(mac in this.sourcing_table){
+        this.sourcing_table[mac].forEach(function(stream_id){
+            id_set[stream_id] = "";
+        });
+    }
+    var ids = [];
+    for(id in id_set){
+        ids.push(id);
+    }
+    ids.sort();
+    this.ids = ids;
+    var idx = -1;
+    if(this.selected_id != -1){
+        idx = this.ids.indexOf(this.selected_id);
+        if(idx == -1){
+            this.selected_id = -1;
+            elem.update();
+        }
+    }
+    this.setup_menu(idx);
+}
+
+streams.setup_menu = function(idx){
+    if(!idx) idx = -1;
+    this.menu.selectAll("option").remove();
+    this.menu.append("option").text("Topology");
+    for(var i=0; i<this.ids.length; i++){
+        this.menu.append("option").text("Stream"+this.ids[i]);
+    }
+    this.menu.property("selectedIndex", idx+1);
+}
+
+function _menu_select_changed() {
+    var idx = streams.menu.property("selectedIndex");
+    data = streams.menu.selectAll("option")[0][idx].text;
+    if(data == "Topology"){
+        streams.selected_id = -1;
+        elem.update();
+    }
+    else{
+        streams.selected_id = Number(data.substring(6));
+        elem.update();
+    }
+}
+
 var elem = {
     force: d3.layout.force()
-        .size([CONF.force.width, CONF.force.height])
-        .charge(CONF.force.charge)
-        .linkDistance(CONF.force.dist)
-        .on("tick", _tick),
-    svg: d3.select("body").append("svg")
-        .attr("id", "topology")
-        .attr("width", CONF.force.width)
-        .attr("height", CONF.force.height),
-    console: d3.select("body").append("div")
-        .attr("id", "console")
-        .attr("width", CONF.force.width)
+             .size([CONF.force.width, CONF.force.height])
+             .charge(CONF.force.charge)
+             .linkDistance(CONF.force.dist)
+             .on("tick", _tick),
+    svg: d3.select("#graph").append("svg")
+           .attr("id", "topology")
+           .attr("width", CONF.force.width)
+           .attr("height", CONF.force.height),
+    console: d3.select("#info").append("div")
+               .attr("id", "console")
 };
 function _tick() {
     elem.link.attr("x1", function(d) { return d.source.x; })
@@ -58,20 +113,162 @@ function _tick() {
 }
 elem.drag = elem.force.drag().on("dragstart", _dragstart);
 function _dragstart(d) {
-    /*
-    var dpid = dpid_to_int(d.dpid)
-    d3.json("/stats/flow/" + dpid, function(e, data) {
-        flows = data[dpid];
-        console.log(flows);
-        elem.console.selectAll("ul").remove();
-        li = elem.console.append("ul")
-            .selectAll("li");
-        li.data(flows).enter().append("li")
-            .text(function (d) { return JSON.stringify(d, null, " "); });
-    });
-    */
+    elem.dragging = d;
     d3.select(this).classed("fixed", d.fixed = true);
+    update_console();
 }
+
+function update_console(){
+    if(!elem.dragging) return;
+    elem.console.selectAll("div").remove();
+    info_div = elem.console.append("div")
+                   .attr("class", "panel panel-info")
+    info_div.append("div")
+            .attr("class", "panel-heading")
+            .text("Node Info");
+    table = info_div.append("table")
+                    .attr("class", "table");
+    if(elem.dragging.type == "host"){
+        _table_add_entry(table, "Type", "host");
+        _table_add_entry(table, "MAC", elem.dragging.mac);
+        _table_add_entry(table, "Sourcing", JSON.stringify(elem.dragging.sourcing));
+        _table_add_entry(table, "Receving", JSON.stringify(elem.dragging.receving));
+    }
+    else{
+        _table_add_entry(table, "Type", "switch");
+        _table_add_entry(table, "DPID", elem.dragging.dpid);
+        _table_add_entry(table, "Priority", JSON.stringify(elem.dragging.priority));
+    }
+
+    if(elem.dragging.type == "host"){
+        src_div = elem.console.append("div").attr("class", "panel panel-info");
+        src_div.append("div").attr("class", "panel-heading").text("Source for");
+        src_list = src_div.append("ul").attr("class", "list-group")
+                        .attr("align", "right");
+        _list_add_entry(src_list, "input", {
+            "class": "form-control",
+            "type": "text",
+            "id": "stream_id_input",
+            "placeholder": "Stream_id"
+        });
+        btn = _list_add_entry(src_list, "button", {
+            "type": "button",
+            "class": "btn btn-default"
+        }).text("Submit").on("click", _post_source_for_request);
+        if(streams.ids.length > 0){
+            rec_div = elem.console.append("div").attr("class", "panel panel-info");
+            rec_div.append("div").attr("class", "panel-heading").text("Receive from");
+            rec_ul = rec_div.append("ul").attr("class", "list-group")
+                            .attr("align", "right");
+            select = _list_add_entry(rec_ul, "select", {
+                "class": "form-control",
+                "id": "stream_id_select"
+            });
+            for(var i=0; i<streams.ids.length; i++){
+                select.append("option").text("Stream"+streams.ids[i]);
+            }
+            _list_add_entry(rec_ul, "button", {
+                "type": "button",
+                "class": "btn btn-default"
+            }).text("Submit").on("click", _post_receive_from_request);
+        }
+    }
+    else{
+        if(streams.ids.length > 0){
+            pri_div = elem.console.append("div").attr("class", "panel panel-info");
+            pri_div.append("div").attr("class", "panel-heading").text("Priority Setting");
+            pri_ul = pri_div.append("ul").attr("class", "list-group")
+                            .attr("align", "right");
+            id_select = _list_add_entry(pri_ul, "select", {
+                "class": "form-control",
+                "id": "stream_id_select"
+            })
+            for(var i=0; i<streams.ids.length; i++){
+                id_select.append("option").text("Stream"+streams.ids[i]);
+            }
+            pri_select = _list_add_entry(pri_ul, "select", {
+                "class": "form-control",
+                "id": "priority_select"
+            });
+            pri_select.append("option").text("Low");
+            pri_select.append("option").text("Mid");
+            pri_select.append("option").text("High");
+
+            _list_add_entry(pri_ul, "button", {
+                "type": "button",
+                "class": "btn btn-default"
+            }).text("Submit").on("click", _post_priority_change_request);
+        }
+    }
+
+}
+
+function _table_add_entry(table, key, value) {
+    tr = table.append("tr");
+    tr.append("td").text(key);
+    tr.append("td").text(value);
+}
+
+function _list_add_entry(list, type, attrs) {
+    entry = list.append("li").attr("class", "list-group-item").append(type);
+    for(key in attrs){
+        entry.attr(key, attrs[key]);
+    }
+    return entry;
+}
+
+function _post_source_for_request() {
+    var data = {
+        "mac": elem.dragging.mac,
+        "dpid": elem.dragging.dpid,
+        "port_no": elem.dragging.port_no
+    };
+    data.stream_id = Number(elem.console.select("#stream_id_input").property("value"));
+    d3.json("/streaming/source_for")
+      .post(JSON.stringify(data), function(error, data){
+          if(error) return console.warn(error);
+          if(data.stat == "succ"){
+              return console.log("post source for requset succ");
+          }
+      });
+}
+
+function _post_receive_from_request() {
+    var data = {
+        "mac": elem.dragging.mac,
+        "dpid": elem.dragging.dpid,
+        "port_no": elem.dragging.port_no
+    };
+    idx = elem.console.select("#stream_id_select").property("selectedIndex");
+    data.stream_id = streams.ids[idx];
+    d3.json("/streaming/receive_from")
+      .post(JSON.stringify(data), function(error, data){
+          if(error) return console.warn(error);
+          if(data.stat == "succ"){
+              return console.log("post receive from requset succ");
+          }
+      });
+}
+
+function _post_priority_change_request() {
+    var data = {
+        "dpid": elem.dragging.dpid
+    };
+    stream_idx = elem.console.select("#stream_id_select").property("selectedIndex");
+    data.stream_id = streams.ids[stream_idx];
+    priority_idx = elem.console.select("#priority_select").property("selectedIndex");
+    data.priority = 1 + priority_idx * 4;
+    console.log(JSON.stringify(data));
+    d3.json("/streaming/priority_change")
+      .post(JSON.stringify(data), function(error, data){
+          if(error) return console.warn(error);
+          if(data.stat == "succ"){
+              return console.log("post priority change requset succ");
+          }
+      });
+}
+
+
 elem.node = elem.svg.selectAll(".node");
 elem.link = elem.svg.selectAll(".link");
 elem.port = elem.svg.selectAll(".port");
@@ -81,32 +278,43 @@ elem.update = function () {
         .links(topo.links)
         .start();
 
-    this.link = this.link.data(topo.links);
-    this.link.exit().remove();
+    this.link.remove();
+    this.link = elem.svg.selectAll(".link").data(topo.links);
     this.link.enter().append("line")
         .attr("class", "link")
     this.link.attr("style", function(d) {
-            if(d.target.type == "host")
-                link_pri = d.source.pri;
+        sel = streams.selected_id;
+        if(d.type == "s2s"){
+            if(d.source.priority[sel] && d.target.priority[sel])
+                link_pri = Math.min(d.source.priority[sel], d.target.priority[sel]);
             else
-                link_pri = Math.min(d.source.pri, d.target.pri);
-            return "stroke: hsl(" + link_pri*15 +", 100%, 50%)";
-        })
+                return "stroke-dasharray: 9, 9; stroke: gray";
+        }
+        else{
+            if(d.source.priority[sel] && 
+                (d.target.sourcing.indexOf(sel)!=-1 ||
+                 d.target.receving.indexOf(sel)!=-1))
+                link_pri = d.source.priority[sel];
+            else
+                return "stroke-dasharray: 9, 9; stroke: gray";
+        }
+        return "stroke: hsl(" + link_pri*15 +", 100%, 50%)";
+    })
 
     this.node = this.node.data(topo.nodes);
     this.node.exit().remove();
     var nodeEnter = this.node.enter().append("g")
         .attr("class", "node")
-        .on("dblclick", function(d) { d3.select(this).classed("fixed", d.fixed = false); })
+        .on("dblclick", function(d) { 
+            d3.select(this).classed("fixed", d.fixed = false); 
+        })
         .call(this.drag);
     nodeEnter.append("image")
         .attr("xlink:href", function(d) {
-            if(d.type == "switch"){
+            if(d.type == "switch")
                 return "./router.svg";
-            }
-            else if(d.type == "host"){
+            else if(d.type == "host")
                 return "./host.svg";
-            }
         })
         .attr("x", -CONF.image.width/2)
         .attr("y", -CONF.image.height/2)
@@ -128,6 +336,7 @@ elem.update = function () {
         .attr("dx", -3)
         .attr("dy", 3)
         .text(function(d) { return trim_zero(d.port_no); });
+    update_console();
 };
 
 function is_valid_link(link) {
@@ -148,7 +357,7 @@ var topo = {
             for (var i = 0; i < nodes.length; i++) {
                 console.log("add switch: " + JSON.stringify(nodes[i]));
                 nodes[i].type = "switch";
-                nodes[i].pri = 3;
+                if(!nodes[i].priority) nodes[i].priority = {};
                 this.nodes.push(nodes[i]);
             }
         }
@@ -157,6 +366,8 @@ var topo = {
                 console.log("add host: " + JSON.stringify(nodes[i]));
 
                 nodes[i].type = "host";
+                if(!nodes[i].receving) nodes[i].receving = [];
+                if(!nodes[i].sourcing) nodes[i].sourcing = [];
                 var host_idx = this.nodes.length;
                 var switch_idx = this.node_index[nodes[i].dpid];
                 if(switch_idx == null) continue;
@@ -237,15 +448,28 @@ var topo = {
             }
         }
     },
-    update_switches_pri: function(switches) {
+    update_switches: function(switches) {
         for (var i = 0; i < switches.length; i++) {
-            console.log("update switch priority: " + JSON.stringify(switches[i]));
+            console.log("update switch: " + JSON.stringify(switches[i]));
             if(!switches[i].dpid in this.node_index){
                 console.log("update error: "+switches[i].dpid+" not found");
                 continue;
             }
-            sw_idx = this.node_index[switches[i].dpid];
-            this.nodes[sw_idx].pri = switches[i].pri;
+            idx = this.node_index[switches[i].dpid];
+            this.nodes[idx].priority = switches[i].priority;
+        }
+    },
+    update_hosts: function(hosts) {
+        for (var i = 0; i < hosts.length; i++) {
+            console.log("update host: " + JSON.stringify(hosts[i]));
+            if(!hosts[i].mac in this.node_index){
+                console.log("update error: "+hosts[i].mac+" not found");
+                continue;
+            }
+            idx = this.node_index[hosts[i].mac];
+            this.nodes[idx].sourcing = hosts[i].sourcing.sort();
+            this.nodes[idx].receving = hosts[i].receving.sort();
+            streams.update_table(hosts[i].mac, hosts[i].sourcing);
         }
     },
     get_link_index: function (link) {
@@ -329,7 +553,8 @@ var rpc = {
         var switches = [];
         for(var i=0; i < params.length; i++){
             switches.push({
-                "dpid":params[i].dpid
+                "dpid":params[i].dpid,
+                "priority": params[i].priority
             });
         }
         topo.add_nodes("switch", switches);
@@ -363,33 +588,55 @@ var rpc = {
             hosts.push({
                 "mac": params[i].mac, 
                 "dpid": params[i].dpid, 
-                "port": params[i].port
+                "port": params[i].port,
+                "sourcing": params[i].sourcing,
+                "receving": params[i].receving
             });
         }
         topo.add_nodes("host", hosts);
         elem.update();
         return "";
     },
-    event_switch_pri_changed: function(params) {
+    event_switch_stat_changed: function(params) {
         var switches = [];
         for(var i=0; i < params.length; i++){
             switches.push({
                 "dpid": params[i].dpid,
-                "pri": params[i].pri
+                "priority": params[i].priority
             });
         }
-        topo.update_switches_pri(switches);
+        console.log(JSON.stringify(switches));
+        topo.update_switches(switches);
+        elem.update();
+        return "";
+    },
+    event_host_stat_changed: function(params) {
+        var hosts = [];
+        for(var i=0; i < params.length; i++){
+            hosts.push({
+                "mac": params[i].mac,
+                "dpid": params[i].dpid,
+                "port": params[i].port,
+                "sourcing": params[i].sourcing,
+                "receving": params[i].receving
+            })
+        }
+        console.log(JSON.stringify(hosts));
+        topo.update_hosts(hosts);
         elem.update();
         return "";
     }
 }
 
 function initialize_topology() {
-    d3.json("/topology/switches", function(error, switches) {
-        d3.json("/topology/links", function(error, links) {
-            d3.json("/topology/hosts", function(error, hosts) {
-                topo.initialize({switches: switches, links: links, hosts: hosts});
-                elem.update();
+    d3.json("/topology/disc", function(error, stat) {
+        d3.json("/topology/switches", function(error, switches) {
+            d3.json("/topology/links", function(error, links) {
+                d3.json("/topology/hosts", function(error, hosts) {
+                    topo.initialize({switches: switches, links: links, hosts: hosts});
+                    elem.update();
+                    streams.setup_menu();
+                });
             });
         });
     });

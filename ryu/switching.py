@@ -14,9 +14,7 @@ class Switching(app_manager.RyuApp):
 
     def __init__(self, *args, **kwargs):
         super(Switching, self).__init__(*args, **kwargs)
-        self.logger = logging.basicConfig(format="Switching: %(message)s")
         self.logger.setLevel(logging.DEBUG)
-        self.logger.debug("Switching: init")
         self.multipath = False
         # mac -> host
         self.hosts = {}

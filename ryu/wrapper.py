@@ -11,9 +11,12 @@ from ryu.topology.event import *
 from ryu.app.wsgi import WSGIApplication
 from ryu.lib.packet import packet, ethernet, arp, ipv4, icmp
 from ryu.lib.mac import haddr_to_bin
+from ryu.lib.dpid import dpid_to_str
+from ryu.lib.port_no import port_no_to_str
 
 from arp_proxy import ARPProxy
 from switching import Switching
+from streaming import Streaming
 from visual import VisualServer
 
 from events import *
@@ -30,6 +33,7 @@ class Wrapper(app_manager.RyuApp):
         "wsgi": WSGIApplication,
         "ARPProxy": ARPProxy,
         "Switching": Switching,
+        "Streaming": Streaming,
         "Visual": VisualServer
     }
     _EVENTS = [Event_ARP_PacketIn,
@@ -38,7 +42,6 @@ class Wrapper(app_manager.RyuApp):
 
     def __init__(self, *args, **kwargs):
         super(Wrapper, self).__init__(*args, **kwargs)
-        self.logger = logging.basicConfig(format="Wrapper: %(message)s")
         self.logger.setLevel(logging.DEBUG)
         self.dpset = kwargs["dpset"]
         self._wsgi = kwargs["wsgi"]
