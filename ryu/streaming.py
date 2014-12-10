@@ -11,11 +11,11 @@ from addrs import *
 from algorithms import *
 
 
+DEFAULT_BANDWIDTH = 10
 class Streaming(app_manager.RyuApp):
     OFP_VERSIONS = [ofproto_v1_3.OFP_VERSION]
     _EVENTS = [EventHostStatChanged,
                EventSwitchStatChanged]
-    DEFAULT_PRIORITY = 5
 
     def __init__(self, *args, **kwargs):
         super(Streaming, self).__init__(*args, **kwargs)
@@ -29,7 +29,7 @@ class Streaming(app_manager.RyuApp):
         self.port_to_host = {}
         # mac -> {host, sourcing, receving}
         self.host_table = {}
-        # dpid -> {stream_id -> priority}
+        # dpid -> {stream_id -> {dist, bandwidth}}
         self.switch_table = {}
         # dpids
         self.sw_to_update = set()
@@ -90,6 +90,7 @@ class Streaming(app_manager.RyuApp):
         self.graph.add_node(dpid)
         self.port_to_host[dpid] = {}
         self.switch_table[dpid] = {}
+        self.update_paths()
 
     @set_ev_cls(EventSwitchLeave)
     def _switch_leave_handler(self, ev):
@@ -103,11 +104,12 @@ class Streaming(app_manager.RyuApp):
             del self.port_to_host[dpid]
         if dpid in self.switch_table:
             del self.switch_table[dpid]
+        self.update_paths()
         inf_streams = set()
         for (src, dst) in self.link_to_streams.keys():
             if (src == dpid) or (dst == dpid):
                 inf_streams |= self.link_to_streams[(src, dst)]
-        for stream_id in inf_stream:
+        for stream_id in inf_streams:
             self.cal_flows_for_stream(stream_id, ev)
 
     @set_ev_cls(EventLinkAdd)
@@ -120,6 +122,7 @@ class Streaming(app_manager.RyuApp):
         self.link_outport[(src_dpid, dst_dpid)] = src_port_no
         self.link_outport[(dst_dpid, src_dpid)] = dst_port_no
         self.graph.add_edge(src_dpid, dst_dpid)
+        self.update_paths()
         if src_dpid < dst_dpid:
             self.link_to_streams[(src_dpid, dst_dpid)] = set()
             for stream_id in self.failed_streams.copy():
@@ -140,26 +143,29 @@ class Streaming(app_manager.RyuApp):
         if (src_dpid, dst_dpid) in self.graph.edges() or \
                 (dst_dpid, src_dpid) in self.graph.edges():
                     self.graph.remove_edge(src_dpid, dst_dpid)
+        self.update_paths()
         inf_stream = self.link_to_streams.get((src_dpid, dst_dpid), set()).copy()
         for stream_id in inf_stream:
             self.cal_flows_for_stream(stream_id, ev)
 
     @set_ev_cls(EventStreamSourceEnter)
     def _source_enter_handler(self, ev):
-        self.streams[ev.stream_id] = {"rate": ev.rate,
-                                      "eth_dst": ev.eth_dst,
-                                      "ip_dst": ev.ip_dst,
-                                      "clients": {},
-                                      "m_tree": {},
-                                      "links": set()}
-        self.streams[ev.stream_id]["src"] = {"mac": ev.src_mac,
-                                             "dpid": ev.src_dpid,
-                                             "in_port": ev.src_in_port}
-        self.host_table[ev.src_mac]["sourcing"].add(ev.stream_id)
-        self.send_event_to_observers(\
-                EventHostStatChanged(self.host_table[ev.src_mac]["host"],
-                                     self.host_table[ev.src_mac]["sourcing"],
-                                     self.host_table[ev.src_mac]["receving"]))
+        stream_id = ev.stream_id
+        if stream_id in self.streams:
+            self.logger.info("source of stream%d already exist", stream_id)
+            return
+        self.streams[stream_id] = {"rate": ev.rate,
+                                   "eth_dst": ev.eth_dst,
+                                   "ip_dst": ev.ip_dst,
+                                   "clients": {},
+                                   "m_tree": {},
+                                   "bandwidth": {},
+                                   "links": set()}
+        self.streams[stream_id]["src"] = {"mac": ev.src_mac,
+                                          "dpid": ev.src_dpid,
+                                          "in_port": ev.src_in_port}
+        self.cal_flows_for_stream(stream_id, ev)
+        self.update_host_table(ev.src_mac, "add", "sourcing", stream_id)
 
     @set_ev_cls(EventStreamSourceLeave)
     def _source_leave_handler(self, ev):
@@ -172,11 +178,14 @@ class Streaming(app_manager.RyuApp):
         # Clean up
         for dpid, stat in m_tree.items():
             self.mod_stream_flow(dpid, stream_id, stat, None)
+            self.update_switch_table(dpid, "del", stream_id)
         for link in self.streams[stream_id]["links"]:
             if link in self.link_to_streams:
                 self.link_to_streams[link].discard(stream_id)
-        mac = self.streams[ev.stream_id]["src"]["mac"]
-        self.host_table[mac]["sourcing"].discard(stream_id)
+        for dpid, port in self.streams[ev.stream_id]["clients"].items():
+            mac = self.port_to_host[dpid][port]
+            self.update_host_table(mac, "del", "receving", stream_id)
+        self.update_host_table(ev.src_mac, "del", "sourcing", stream_id)
         del self.streams[stream_id]
 
     @set_ev_cls(EventStreamClientEnter)
@@ -186,10 +195,11 @@ class Streaming(app_manager.RyuApp):
             self.logger.info("client joining a non-existing stream%d",
                              stream_id)
             return False
-        client_ports = self.streams[stream_id]["clients"].setdefault(ev.dpid, set())
+        client_ports = self.streams[stream_id]["clients"].setdefault(ev.dpid, 
+                                                                     set())
         client_ports.add(ev.out_port)
         self.cal_flows_for_stream(stream_id, ev)
-        self.host_table[ev.mac]["receving"].add(stream_id)
+        self.update_host_table(ev.mac, "add", "receving", stream_id)
 
     @set_ev_cls(EventStreamClientLeave)
     def _client_leave_handler(self, ev):
@@ -203,7 +213,15 @@ class Streaming(app_manager.RyuApp):
         self.cal_flows_for_stream(stream_id, ev)
         if len(client_ports) == 0:
             del self.streams[stream_id]["clients"][ev.dpid]
-        self.host_table[ev.mac]["receving"].discard(stream_id)
+        self.update_host_table(ev.mac, "del", "receving", stream_id)
+
+    @set_ev_cls(EventStreamBandwidthChange)
+    def _bandwidth_change_handler(self, ev):
+        stream_id = ev.stream_id
+        dpid = ev.dpid
+        bandwidth = ev.bandwidth
+        self.streams[stream_id]["bandwidth"][dpid] = bandwidth
+        self.update_topology(stream_id)
 
     @set_ev_cls(EventPacketIn, MAIN_DISPATCHER)
     def _streaming_handler(self, ev):
@@ -247,8 +265,6 @@ class Streaming(app_manager.RyuApp):
                 self.pathlens[src][dst] = len(self.paths[src][dst])
 
     def cal_flows_for_stream(self, stream_id, ev):
-        if isinstance(EventSwitchBase, ev) or isinstance(EventLinkBase, ev):
-            self.update_paths()
         for link in self.streams[stream_id]["links"]:
             if link in self.link_to_streams[link]:
                 self.link_to_streams[link].discard(stream_id)
@@ -271,9 +287,8 @@ class Streaming(app_manager.RyuApp):
             prev_stat = self.streams[stream_id]["m_tree"].get(dpid)
             curr_stat = new_tree.get(dpid)
             self.mod_stream_flow(dpid, stream_id, prev_stat, curr_stat)
-
-        self.streams[stream_id]["m_tree"] = new_tree
-
+            if curr_stat is None:
+                self.update_switch_table(dpid, "del", stream_id)
         for dpid, stat in new_tree.items():
             if stat["parent"] != -1:
                 src, dst = dpid, stat["parent"]
@@ -281,12 +296,8 @@ class Streaming(app_manager.RyuApp):
                     src, dst = dst, src
                 self.streams[stream_id]["links"].add((src, dst))
                 self.link_to_streams[(src, dst)].add(stream_id)
-        '''
-        for dpid in self.sw_to_update:
-            self.send_event_to_observers(\
-                    EventSwitchStatChanged(dpid, self.switch_table[dpid]))
-        self.sw_to_update.clear()
-        '''
+        self.streams[stream_id]["m_tree"] = new_tree
+        self.update_topology(stream_id)
 
     def mod_stream_flow(self, dpid, stream_id, prev_stat, curr_stat):
         datapath = self.dpset.get(dpid)
@@ -294,26 +305,31 @@ class Streaming(app_manager.RyuApp):
         parser = datapath.ofproto_parser
         if datapath is None:
             return False
-        if prev_stat is None:
-            prev_stat = {"parent": -1, "children": set()}
-        if curr_stat is None:
-            curr_stat = {"parent": -1, "children": set()}
 
-        prev_in_port = self.link_outport.get((dpid, prev_stat["parent"]), -1)
-        curr_in_port = self.link_outport.get((dpid, curr_stat["parent"]), -1)
-        prev_out_ports = map(lambda c: self.link_outport[(dpid, c)], 
-                             prev_stat["children"])
-        curr_out_ports = map(lambda c: self.link_outport[(dpid, c)],
-                             curr_stat["children"])
+        if prev_stat is not None:
+            if self.streams[stream_id]["src"]["dpid"] == dpid:
+                prev_in_port = self.streams[stream_id]["src"]["in_port"]
+            else:
+                prev_in_port = self.link_outport.get((dpid, prev_stat["parent"]), -1)
+            prev_out_ports = map(lambda c: self.link_outport[(dpid, c)],\
+                    prev_stat["children"])
+        if curr_stat is not None:
+            if self.streams[stream_id]["src"]["dpid"] == dpid:
+                curr_in_port = self.streams[stream_id]["src"]["in_port"]
+            else:
+                curr_in_port = self.link_outport.get((dpid, curr_stat["parent"]), -1)
+            curr_out_ports = map(lambda c: self.link_outport[(dpid, c)],\
+                    curr_stat["children"])
 
-        if len(prev_out_ports) != 0:
+        if prev_stat is not None and len(prev_out_ports) != 0:
             # Del existing group
             gmod = parser.OFPGroupMod(datapath=datapath,
-                                      command=ofproto.OFPGC_DEL,
+                                      command=ofproto.OFPGC_DELETE,
                                       type_=ofproto.OFPGT_ALL,
                                       group_id=stream_id)
             datapath.send_msg(gmod)
-        if len(curr_out_ports) != 0:
+
+        if curr_stat is not None and len(curr_out_ports) != 0:
             # Add new group
             buckets = []
             for port in curr_out_ports:
@@ -332,13 +348,14 @@ class Streaming(app_manager.RyuApp):
                                       buckets=buckets)
             datapath.send_msg(gmod)
 
-        if prev_in_port != -1:
+        if prev_stat is not None:
             # Del first
             out_port = ofproto.OFPP_ANY
             out_group = ofproto.OFPG_ANY
             if len(prev_out_ports) != 0:
                 out_group = stream_id
-            match = parser.OFPMatch(in_port=curr_in_port, eth_dst=eth_dst)
+            eth_dst = self.streams[stream_id]["eth_dst"]
+            match = parser.OFPMatch(in_port=prev_in_port, eth_dst=eth_dst)
             mod = parser.OFPFlowMod(datapath=datapath,
                                     command=ofproto.OFPFC_DELETE,
                                     out_port=out_port,
@@ -347,10 +364,11 @@ class Streaming(app_manager.RyuApp):
                                     instructions=[])
             datapath.send_msg(mod)
 
-        if curr_in_port != -1:
+        if curr_stat is not None:
             # Add new flow
             priority = 5
-            match = parser.OFPMatch(in_port=in_port, eth_dst=eth_dst)
+            eth_dst = self.streams[stream_id]["eth_dst"]
+            match = parser.OFPMatch(in_port=curr_in_port, eth_dst=eth_dst)
             actions = []
             if len(curr_out_ports) != 0:
                 actions.append(parser.OFPActionGroup(stream_id,
@@ -365,18 +383,45 @@ class Streaming(app_manager.RyuApp):
 
         return True
 
-    def get_real_bandwidth(self, stream_id):
+    def update_topology(self, stream_id):
         src_dpid = self.streams[stream_id]["src"]["dpid"]
         m_tree = self.streams[stream_id]["m_tree"]
         bw_setting = self.streams[stream_id]["bandwidth"]
         bw_real = {}
-        stack = [src_dpid]
+        stack = [(src_dpid, 1)]
         while len(stack) > 0:
-            dpid = stack.pop()
+            dpid, dist = stack.pop()
             parent = m_tree[dpid]["parent"]
             children = m_tree[dpid]["children"]
-            [stakc.append(child) for child in children]
-            p_bw = bw_real.get(parent, DEFAULT_PRIORITY)
-            m_bw = bw_setting.get(dpid, DEFAULT_PRIORITY)
+            [stack.append((child, dist+1)) for child in children]
+            p_bw = bw_real.get(parent, DEFAULT_BANDWIDTH)
+            m_bw = bw_setting.get(dpid, DEFAULT_BANDWIDTH)
             bw_real[dpid] = min(p_bw, m_bw)
+            self.update_switch_table(dpid, "add", stream_id, dist, bw_real[dpid])
         return bw_real
+
+    def update_host_table(self, mac, op, category, stream_id):
+        if op == "add":
+            self.host_table[mac][category].add(stream_id)
+        elif op == "del":
+            self.host_table[mac][category].discard(stream_id)
+        self.send_event_to_observers(\
+                EventHostStatChanged(self.host_table[mac]["host"],
+                                     self.host_table[mac]["sourcing"],
+                                     self.host_table[mac]["receving"]))
+
+    def update_switch_table(self, dpid, op, stream_id, dist=-1, bw=-1):
+        send_event = True
+        if op == "add":
+            if stream_id in self.switch_table[dpid]:
+                entry = self.switch_table[dpid][stream_id]
+                if entry["bandwidth"] == bw and entry["distance"] == dist:
+                    send_event = False
+            self.switch_table[dpid][stream_id] = {"bandwidth": bw, 
+                                                  "distance": dist}
+        elif op == "del":
+            del self.switch_table[dpid][stream_id]
+        if send_event:
+            self.send_event_to_observers(\
+                    EventSwitchStatChanged(dpid,
+                                           self.switch_table[dpid]))

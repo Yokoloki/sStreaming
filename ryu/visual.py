@@ -11,7 +11,8 @@ from ryu.app.wsgi import WebSocketRPCClient, websocket
 from ryu.contrib.tinyrpc.exc import InvalidReplyError
 from socket import error as SocketError
 from ryu.controller.handler import set_ev_cls
-from ryu.lib.dpid import DPID_PATTERN
+from ryu.lib.dpid import DPID_PATTERN, str_to_dpid
+from ryu.lib.port_no import str_to_port_no
 from ryu.topology.event import *
 from events import *
 
@@ -24,7 +25,7 @@ class VisualServer(app_manager.RyuApp):
                EventStreamSourceLeave,
                EventStreamClientEnter,
                EventStreamClientLeave,
-               EventStreamPriorityChange]
+               EventStreamBandwidthChange]
 
     def __init__(self, *args, **kwargs):
         super(VisualServer, self).__init__(*args, **kwargs)
@@ -48,11 +49,13 @@ class VisualServer(app_manager.RyuApp):
         sw_stat_rep = self.send_request(EventSwitchStatRequest())
         switches = [switch.to_dict() for switch in sw_rep.switches]
         [s.pop("ports") for s in switches]
-        sw_stat = sw_stat_rep.sw_stat
+        bandwidth = sw_stat_rep.bandwidth
+        distance = sw_stat_rep.distance
         for i in xrange(len(switches)):
-            dpid = switches[i]["dpid"]
-            if dpid in sw_stat:
-                switches[i]["priority"] = sw_stat[dpid]
+            dpid = str_to_dpid(switches[i]["dpid"])
+            if dpid in bandwidth:
+                switches[i]["bandwidth"] = bandwidth[dpid]
+                switches[i]["distance"] = distance[dpid]
         return switches
 
     def get_links(self):
@@ -110,7 +113,6 @@ class VisualServer(app_manager.RyuApp):
         self._rpc_broadcall("event_host_stat_changed", msg)
 
     def _rpc_broadcall(self, func_name, msg):
-        print "broadcall %s %s" % (func_name, msg)
         disconnected_clients = []
         for rpc_client in self.rpc_clients:
             rpc_server = rpc_client.get_proxy()
@@ -185,8 +187,8 @@ class StreamController(ControllerBase):
             return Response(status=400)
         try:
             mac = data["mac"]
-            dpid = data["dpid"]
-            port_no = data["port_no"]
+            dpid = str_to_dpid(data["dpid"])
+            port_no = str_to_port_no(data["port_no"])
             stream_id = data["stream_id"]
         except KeyError, message:
             return Response(status=400, body=str(message))
@@ -205,8 +207,8 @@ class StreamController(ControllerBase):
             return Response(status=400)
         try:
             mac = data["mac"]
-            dpid = data["dpid"]
-            port_no = data["port_no"]
+            dpid = str_to_dpid(data["dpid"])
+            port_no = str_to_port_no(data["port_no"])
             stream_id = data["stream_id"]
         except KeyError, message:
             return Response(status=400, body=str(message))
@@ -215,8 +217,8 @@ class StreamController(ControllerBase):
         body = json.dumps({"stat": "succ"})
         return Response(content_type="application/json", body=body)
 
-    @route("stream", "/streaming/priority_change", methods=["POST"])
-    def __priority_change_handler(self, req, **kwargs):
+    @route("stream", "/streaming/bandwidth_change", methods=["POST"])
+    def _bandwidth_change_handler(self, req, **kwargs):
         try:
             data = eval(req.body) if req.body else {}
         except SyntaxError:
@@ -225,12 +227,12 @@ class StreamController(ControllerBase):
             return Response(status=400)
         try:
             stream_id = data["stream_id"]
-            dpid = data["dpid"]
-            priority = data["priority"]
+            dpid = str_to_dpid(data["dpid"])
+            bandwidth = data["bandwidth"]
         except KeyError, message:
             return Response(status=400, body=str(message))
         self.visual_server.send_event_to_observers(\
-                EventStreamPriorityChange(stream_id, dpid, priority))
+                EventStreamBandwidthChange(stream_id, dpid, bandwidth))
         body = json.dumps({"stat": "succ"})
         return Response(content_type="application/json", body=body)
 

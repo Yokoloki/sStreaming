@@ -47,12 +47,14 @@ class Wrapper(app_manager.RyuApp):
         self._wsgi = kwargs["wsgi"]
         self._arp_proxy = kwargs["ARPProxy"]
         self._switching = kwargs["Switching"]
+        self._streaming = kwargs["Streaming"]
         self._visual = kwargs["Visual"]
     
         self._arp_proxy.reg_DPSet(self.dpset)
         self._arp_proxy.set_wrapper(self)
         self._switching.reg_DPSet(self.dpset)
         self._switching.enable_multipath()
+        self._streaming.reg_DPSet(self.dpset)
         self._visual.reg_DPSet(self.dpset)
         self._visual.set_wrapper(self)
         self._visual.reg_controllers(self._wsgi)
@@ -177,11 +179,11 @@ class Wrapper(app_manager.RyuApp):
         # Active Host Discovery
         if eth_dst == HOST_DIS_ETH_SRC:
             self.logger.info("recv HOST_DIS_ETH_SRC")
-            # if eth_src not in self.hostmac[datapath.id]:
-            #     src_ip = ip_protocol.src
-            #     self.hostmac[datapath.id].add(eth_src)
-            #     host = Host(eth_src, src_ip, datapath.id, in_port)
-            #     self.send_event_to_observers(EventHostReg(host))
+            if eth_src not in self.hostmac[datapath.id]:
+                src_ip = ip_protocol.src
+                self.hostmac[datapath.id].add(eth_src)
+                host = Host(eth_src, src_ip, datapath.id, in_port)
+                self.send_event_to_observers(EventHostReg(host))
             return
 
         # Passive Host Discovery

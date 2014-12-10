@@ -137,19 +137,21 @@ function update_console(){
     else{
         _table_add_entry(table, "Type", "switch");
         _table_add_entry(table, "DPID", elem.dragging.dpid);
-        _table_add_entry(table, "Priority", JSON.stringify(elem.dragging.priority));
+        _table_add_entry(table, "Bandwidth", JSON.stringify(elem.dragging.bandwidth));
     }
 
     if(elem.dragging.type == "host"){
         src_div = elem.console.append("div").attr("class", "panel panel-info");
         src_div.append("div").attr("class", "panel-heading").text("Source for");
-        src_list = src_div.append("ul").attr("class", "list-group")
-                        .attr("align", "right");
+        src_list = src_div.append("ul")
+                          .attr("class", "list-group")
+                          .attr("id", "source_for_ul")
+                          .attr("align", "right");
         _list_add_entry(src_list, "input", {
             "class": "form-control",
             "type": "text",
             "id": "stream_id_input",
-            "placeholder": "Stream_id"
+            "placeholder": "Stream_id[1, 65535]"
         });
         btn = _list_add_entry(src_list, "button", {
             "type": "button",
@@ -158,7 +160,8 @@ function update_console(){
         if(streams.ids.length > 0){
             rec_div = elem.console.append("div").attr("class", "panel panel-info");
             rec_div.append("div").attr("class", "panel-heading").text("Receive from");
-            rec_ul = rec_div.append("ul").attr("class", "list-group")
+            rec_ul = rec_div.append("ul")
+                            .attr("class", "list-group")
                             .attr("align", "right");
             select = _list_add_entry(rec_ul, "select", {
                 "class": "form-control",
@@ -176,7 +179,7 @@ function update_console(){
     else{
         if(streams.ids.length > 0){
             pri_div = elem.console.append("div").attr("class", "panel panel-info");
-            pri_div.append("div").attr("class", "panel-heading").text("Priority Setting");
+            pri_div.append("div").attr("class", "panel-heading").text("Bandwidth Setting");
             pri_ul = pri_div.append("ul").attr("class", "list-group")
                             .attr("align", "right");
             id_select = _list_add_entry(pri_ul, "select", {
@@ -188,7 +191,7 @@ function update_console(){
             }
             pri_select = _list_add_entry(pri_ul, "select", {
                 "class": "form-control",
-                "id": "priority_select"
+                "id": "bandwidth_select"
             });
             pri_select.append("option").text("Low");
             pri_select.append("option").text("Mid");
@@ -197,7 +200,7 @@ function update_console(){
             _list_add_entry(pri_ul, "button", {
                 "type": "button",
                 "class": "btn btn-default"
-            }).text("Submit").on("click", _post_priority_change_request);
+            }).text("Submit").on("click", _post_bandwidth_change_request);
         }
     }
 
@@ -224,11 +227,36 @@ function _post_source_for_request() {
         "port_no": elem.dragging.port_no
     };
     data.stream_id = Number(elem.console.select("#stream_id_input").property("value"));
+    existed = false;
+    for(var i=0; i<streams.ids.length; i++){
+        if(streams.ids[i] == data.stream_id){
+            existed = true;
+            break;
+        }
+    }
+    ul = elem.console.select("#source_for_ul");
+    div = ul.select("div");
+    if(div) div.remove();
+    if(existed){
+        ul.select("li").insert("div", "input");
+        ul.select("div").attr("class", "alert alert-warning")
+                        .attr("align", "left")
+                        .attr("role", "alert")
+                        .text("Warning: this id has been used");
+        return;
+    }
     d3.json("/streaming/source_for")
       .post(JSON.stringify(data), function(error, data){
-          if(error) return console.warn(error);
+          if(error){
+              ul.select("li").insert("div", "input");
+              ul.select("div").attr("class", "alert alert-danger")
+                              .attr("align", "left")
+                              .attr("role", "alert")
+                              .text("Error: " + error);
+              return;
+          }
           if(data.stat == "succ"){
-              return console.log("post source for requset succ");
+              return;
           }
       });
 }
@@ -240,7 +268,7 @@ function _post_receive_from_request() {
         "port_no": elem.dragging.port_no
     };
     idx = elem.console.select("#stream_id_select").property("selectedIndex");
-    data.stream_id = streams.ids[idx];
+    data.stream_id = Number(streams.ids[idx]);
     d3.json("/streaming/receive_from")
       .post(JSON.stringify(data), function(error, data){
           if(error) return console.warn(error);
@@ -250,20 +278,20 @@ function _post_receive_from_request() {
       });
 }
 
-function _post_priority_change_request() {
+function _post_bandwidth_change_request() {
     var data = {
         "dpid": elem.dragging.dpid
     };
     stream_idx = elem.console.select("#stream_id_select").property("selectedIndex");
-    data.stream_id = streams.ids[stream_idx];
-    priority_idx = elem.console.select("#priority_select").property("selectedIndex");
-    data.priority = 1 + priority_idx * 4;
+    data.stream_id = Number(streams.ids[stream_idx]);
+    bandwidth_idx = elem.console.select("#bandwidth_select").property("selectedIndex");
+    data.bandwidth = 1 + bandwidth_idx * 4;
     console.log(JSON.stringify(data));
-    d3.json("/streaming/priority_change")
+    d3.json("/streaming/bandwidth_change")
       .post(JSON.stringify(data), function(error, data){
           if(error) return console.warn(error);
           if(data.stat == "succ"){
-              return console.log("post priority change requset succ");
+              return console.log("post bandwidth change requset succ");
           }
       });
 }
@@ -282,19 +310,27 @@ elem.update = function () {
     this.link = elem.svg.selectAll(".link").data(topo.links);
     this.link.enter().append("line")
         .attr("class", "link")
+        .attr("marker-end", "url(#end)")
     this.link.attr("style", function(d) {
         sel = streams.selected_id;
         if(d.type == "s2s"){
-            if(d.source.priority[sel] && d.target.priority[sel])
-                link_pri = Math.min(d.source.priority[sel], d.target.priority[sel]);
+            if(d.source.bandwidth[sel] && d.target.bandwidth[sel]){
+                if(d.source.distance[sel] > d.target.distance[sel])
+                    link_pri = d.target.bandwidth[sel];
+                else
+                    link_pri = d.source.bandwidth[sel];
+            }
             else
                 return "stroke-dasharray: 9, 9; stroke: gray";
         }
         else{
-            if(d.source.priority[sel] && 
+            if(d.source.bandwidth[sel] && 
                 (d.target.sourcing.indexOf(sel)!=-1 ||
                  d.target.receving.indexOf(sel)!=-1))
-                link_pri = d.source.priority[sel];
+                if(d.source.distance[sel] == 1)
+                    link_pri = 10;
+                else
+                    link_pri = d.source.bandwidth[sel];
             else
                 return "stroke-dasharray: 9, 9; stroke: gray";
         }
@@ -357,17 +393,32 @@ var topo = {
             for (var i = 0; i < nodes.length; i++) {
                 console.log("add switch: " + JSON.stringify(nodes[i]));
                 nodes[i].type = "switch";
-                if(!nodes[i].priority) nodes[i].priority = {};
+                if(!nodes[i].bandwidth) nodes[i].bandwidth = {};
+                if(!nodes[i].distance) nodes[i].distance = {};
                 this.nodes.push(nodes[i]);
             }
         }
         else if(type == "host"){
             for (var i = 0; i < nodes.length; i++) {
                 console.log("add host: " + JSON.stringify(nodes[i]));
-
+                if(nodes[i].mac in this.node_index){
+                    console.log("host already exist");
+                    continue;
+                }
                 nodes[i].type = "host";
-                if(!nodes[i].receving) nodes[i].receving = [];
-                if(!nodes[i].sourcing) nodes[i].sourcing = [];
+                if(nodes[i].sourcing){
+                    nodes[i].sourcing.sort();
+                    streams.update_table(nodes[i].mac, nodes[i].sourcing);
+                }
+                else{
+                    nodes[i].sourcing = [];
+                }
+                if(nodes[i].receving){
+                    nodes[i].receving.sort();
+                }
+                else{
+                    nodes[i].receving = [];
+                }
                 var host_idx = this.nodes.length;
                 var switch_idx = this.node_index[nodes[i].dpid];
                 if(switch_idx == null) continue;
@@ -376,7 +427,7 @@ var topo = {
                     source: switch_idx,
                     target: host_idx,
                     port: {
-                        src: {dpid: nodes[i].dpid, port_no: nodes[i].port},
+                        src: {dpid: nodes[i].dpid, port_no: nodes[i].port_no},
                         dst: {mac: nodes[i].mac}
                     }
                 }
@@ -456,7 +507,8 @@ var topo = {
                 continue;
             }
             idx = this.node_index[switches[i].dpid];
-            this.nodes[idx].priority = switches[i].priority;
+            this.nodes[idx].bandwidth = switches[i].bandwidth;
+            this.nodes[idx].distance = switches[i].distance;
         }
     },
     update_hosts: function(hosts) {
@@ -554,7 +606,8 @@ var rpc = {
         for(var i=0; i < params.length; i++){
             switches.push({
                 "dpid":params[i].dpid,
-                "priority": params[i].priority
+                "bandwidth": params[i].bandwidth,
+                "distance": params[i].distance
             });
         }
         topo.add_nodes("switch", switches);
@@ -588,7 +641,7 @@ var rpc = {
             hosts.push({
                 "mac": params[i].mac, 
                 "dpid": params[i].dpid, 
-                "port": params[i].port,
+                "port_no": params[i].port_no,
                 "sourcing": params[i].sourcing,
                 "receving": params[i].receving
             });
@@ -602,7 +655,8 @@ var rpc = {
         for(var i=0; i < params.length; i++){
             switches.push({
                 "dpid": params[i].dpid,
-                "priority": params[i].priority
+                "bandwidth": params[i].bandwidth,
+                "distance": params[i].distance
             });
         }
         console.log(JSON.stringify(switches));

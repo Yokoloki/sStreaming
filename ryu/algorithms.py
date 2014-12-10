@@ -6,18 +6,21 @@ class Shortest_Path_Heuristic(object):
     def __init__(self):
         super(Shortest_Path_Heuristic, self).__init__()
         self.event_map = {"EventSwitchLeave": "_topology_changed_handler",
+                          "EventLinkAdd": "_topology_changed_handler",
                           "EventLinkDelete": "_topology_changed_handler",
+                          "EventStreamSourceEnter": "_source_enter_handler",
+                          "EventStreamSourceLeave": "_source_leave_handler",
                           "EventStreamClientEnter": "_client_enter_handler",
                           "EventStreamClientLeave": "_client_leave_handler"}
 
     # Make sure paths && pathlens is up to date
-    def cal(self, stream, link_outport, paths, pathlens, ev):
+    def cal(self, stream, paths, pathlens, ev):
         ev_name = ev.__class__.__name__
         func_name = self.event_map.get(ev_name)
         if func_name is None:
             print "%s not in event_map of Shortest_Path_Heuristic" % ev_name
             exit(1)
-        new_tree = getattr(self, func_name)(stream, link_outport, paths, pathlens, ev)
+        new_tree = getattr(self, func_name)(stream, paths, pathlens, ev)
         return new_tree
 
     def _topology_changed_handler(self, stream, paths, pathlens, ev):
@@ -53,8 +56,8 @@ class Shortest_Path_Heuristic(object):
                     new_tree[node]["children"].add(child)
                 in_nodes.add(node)
         # Diff between prev_tree and new_tree
-        mod_nodes.update(stream["m_tree"].keys() ^ new_tree.keys())
-        to_check = stream["m_tree"].keys() & new_tree.keys()
+        mod_nodes.update(set(stream["m_tree"].keys()) ^ set(new_tree.keys()))
+        to_check = set(stream["m_tree"].keys()) & set(new_tree.keys())
         for node in to_check:
             prev_stat = stream["m_tree"][node]
             curr_stat = new_tree[node]
@@ -62,6 +65,18 @@ class Shortest_Path_Heuristic(object):
                     prev_stat["children"] != curr_stat["children"]:
                         mod_nodes.add(node)
                         continue
+        return new_tree, mod_nodes
+
+    def _source_enter_handler(self, stream, paths, pathlens, ev):
+        new_tree = {}
+        new_tree[ev.src_dpid] = {"parent": -1,
+                                 "children": set()}
+        mod_nodes = set([ev.src_dpid])
+        return new_tree, mod_nodes
+
+    def _source_leave_handler(self, stream, paths, pathlens, ev):
+        new_tree = {}
+        mod_nodes = set(stream["m_tree"].keys())
         return new_tree, mod_nodes
 
     def _client_enter_handler(self, stream, paths, pathlens, ev):

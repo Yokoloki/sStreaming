@@ -83,7 +83,7 @@ class EventSwitchStatRequest(event.EventRequestBase):
         self.dpid = dpid
 
     def __str__(self):
-        return "EventHostStatRequest<src=%s, mac=%s>" % \
+        return "EventSwitchStatRequest<src=%s, mac=%s>" % \
             (self.src, self.dpid)
 
 
@@ -92,23 +92,36 @@ class EventSwitchStatReply(event.EventReplyBase):
     def __init__(self, dst, sw_stat):
         super(EventSwitchStatReply, self).__init__(dst)
         self.sw_stat = sw_stat
+        self.bandwidth = {}
+        self.distance = {}
+        for dpid in sw_stat:
+            self.bandwidth[dpid] = {}
+            self.distance[dpid] = {}
+            for stream_id, info in sw_stat[dpid].items():
+                self.bandwidth[dpid][stream_id] = info["bandwidth"]
+                self.distance[dpid][stream_id] = info["distance"]
 
     def __str__(self):
-        return "EventHostStatReply<dst=%s, %s>" % \
-            (self.dst, self.sw_stat)
+        return "EventSwitchStatReply<dst=%s, %s, %s>" % \
+            (self.dst, self.bandwidth, self.distance)
 
 
 class EventSwitchStatChanged(event.EventBase):
 
-    def __init__(self, dpid, priority):
+    def __init__(self, dpid, sw_stat):
         super(EventSwitchStatChanged, self).__init__()
         self.dpid = dpid
-        self.priority = priority
+        self.bandwidth = {}
+        self.distance = {}
+        for stream_id, info in sw_stat.items():
+            self.bandwidth[stream_id] = info["bandwidth"]
+            self.distance[stream_id] = info["distance"]
 
     def to_dict(self):
         d = {
             "dpid": dpid_to_str(self.dpid),
-            "priority": self.priority
+            "bandwidth": self.bandwidth,
+            "distance": self.distance
         }
         return d
 
@@ -118,13 +131,13 @@ class EventHostStatChanged(event.EventBase):
     def __init__(self, host, sourcing, receving):
         super(EventHostStatChanged, self).__init__()
         self.host = host
-        self.sourcing = list(sourcing)
-        self.receving = list(receving)
+        self.sourcing = sourcing
+        self.receving = receving
 
     def to_dict(self):
         d = self.host.to_dict()
-        d["sourcing"] = self.sourcing
-        d["receving"] = self.receving
+        d["sourcing"] = list(self.sourcing)
+        d["receving"] = list(self.receving)
         return d
 
 
@@ -168,10 +181,10 @@ class EventStreamClientLeave(event.EventBase):
         self.out_port = out_port
 
 
-class EventStreamPriorityChange(event.EventBase):
+class EventStreamBandwidthChange(event.EventBase):
 
-    def __init__(self, stream_id, dpid, priority):
-        super(EventStreamPriorityChange, self).__init__()
+    def __init__(self, stream_id, dpid, bandwidth):
+        super(EventStreamBandwidthChange, self).__init__()
         self.stream_id = stream_id
         self.dpid = dpid
-        self.priority = priority
+        self.bandwidth = bandwidth
