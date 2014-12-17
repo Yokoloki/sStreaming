@@ -22,6 +22,12 @@ class Event_Switching_PacketIn(EventPacketIn):
         super(Event_Switching_PacketIn, self).__init__(*args, **kwargs)
 
 
+class Event_Streaming_PacketIn(EventPacketIn):
+
+    def __init__(self, *args, **kwargs):
+        super(Event_Streaming_PacketIn, self).__init__(*args, **kwargs)
+
+
 class EventHostReg(event.EventBase):
 
     def __init__(self, host):

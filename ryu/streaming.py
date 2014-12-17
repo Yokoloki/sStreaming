@@ -228,18 +228,18 @@ class Streaming(app_manager.RyuApp):
         msg = ev.msg
         pkt = ev.pkt
 
-        # datapath = msg.datapath
-        # ofproto = datapath.ofproto
-        # parser = datapath.ofproto_parser
+        dpid = msg.datapath.id
         in_port = msg.match["in_port"]
 
-        # dpid = datapath.id
-        dst_ip = pkt.get_protocol(ipv4.ipv4).dst
-        stream_id = get_stream_id(dst_ip)
+        eth_src = pkt.get_protocol(ethernet.ethernet).src
+        ip_dst = pkt.get_protocol(ipv4.ipv4).dst
+        stream_id = get_stream_id(ip_dst)
 
         if stream_id not in self.streams:
-            self.logger.info("recv unregistered stream%d", stream_id)
-            return False
+            self.logger.info("reg stream%d through packets", stream_id)
+            self.send_event_to_observers(\
+                    EventStreamSourceEnter(stream_id, src_eth, dpid, in_port))
+            return True
         if dpid not in self.streams[stream_id]["m_tree"]:
             self.logger.info("packet of stream %d is not "
                              "supposed to recv in dp%d",
@@ -252,7 +252,7 @@ class Streaming(app_manager.RyuApp):
                              "to recv from %d:%d, not %d:%d",
                              stream_id, dpid, flow["in_port"], dpid, in_port)
             return False
-        self.logger.info("flow of stream%d is not installed as excepted",
+        self.logger.info("flow of stream%d is not installed properly",
                          stream_id)
         return False
 

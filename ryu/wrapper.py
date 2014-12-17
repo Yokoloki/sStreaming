@@ -38,6 +38,7 @@ class Wrapper(app_manager.RyuApp):
     }
     _EVENTS = [Event_ARP_PacketIn,
                Event_Switching_PacketIn,
+               Event_Streaming_PacketIn,
                EventHostReg]
 
     def __init__(self, *args, **kwargs):
@@ -53,6 +54,7 @@ class Wrapper(app_manager.RyuApp):
         self._arp_proxy.reg_DPSet(self.dpset)
         self._arp_proxy.set_wrapper(self)
         self._switching.reg_DPSet(self.dpset)
+        self._switching.set_wrapper(self)
         self._switching.enable_multipath()
         self._streaming.reg_DPSet(self.dpset)
         self._visual.reg_DPSet(self.dpset)
@@ -150,10 +152,14 @@ class Wrapper(app_manager.RyuApp):
         parser = datapath.ofproto_parser
 
         self.flush_flows(datapath)
+        dpid = datapath.id
         # table-miss flow entry
         miss_match = parser.OFPMatch()
-        miss_actions = [parser.OFPActionOutput(ofproto.OFPP_CONTROLLER,
-                                               ofproto.OFPCML_NO_BUFFER)]
+        if dpid == NAT_SW_DPID:
+            miss_actions = [parser.OFPActionOutput(ofproto.OFPP_NORMAL)]
+        else:
+            miss_actions = [parser.OFPActionOutput(ofproto.OFPP_CONTROLLER,
+                                                   ofproto.OFPCML_NO_BUFFER)]
         self.add_flow(datapath, 0, miss_match, miss_actions)
 
         # ipv6 discovery entry
@@ -176,34 +182,41 @@ class Wrapper(app_manager.RyuApp):
         eth_src = pkt.get_protocol(ethernet.ethernet).src
         eth_dst = pkt.get_protocol(ethernet.ethernet).dst
 
-        # Active Host Discovery
-        if eth_dst == HOST_DIS_ETH_SRC:
-            self.logger.info("recv HOST_DIS_ETH_SRC")
-            if eth_src not in self.hostmac[datapath.id]:
+        if eth_dst == LLDP:
+            return
+
+        if eth_src not in self.hostmac[datapath.id]:
+            src_ip = None
+            if arp_protocol is not None:
+                src_ip = arp_protocol.src_ip
+            elif ip_protocol is not None:
                 src_ip = ip_protocol.src
+            if src_ip is not None:
+                print "disc ip%s mac%s" % (src_ip, eth_src)
                 self.hostmac[datapath.id].add(eth_src)
                 host = Host(eth_src, src_ip, datapath.id, in_port)
                 self.send_event_to_observers(EventHostReg(host))
+ 
+        # Active Host Discovery
+        if eth_dst == HOST_DIS_ETH_SRC:
+            self.logger.info("recv HOST_DIS_ETH_SRC")
             return
 
         # Passive Host Discovery
         if arp_protocol:
             self.send_event_to_observers(Event_ARP_PacketIn(msg, pkt))
-            if eth_src not in self.hostmac[datapath.id]:
-                src_ip = arp_protocol.src_ip
-                self.hostmac[datapath.id].add(eth_src)
-                host = Host(eth_src, src_ip, datapath.id, in_port)
-                self.send_event_to_observers(EventHostReg(host))
             return
 
-        if eth_dst == LLDP or eth_dst == ETHERNET_FLOOD:
+        if eth_dst == ETHERNET_FLOOD:
             # Ignore LLDP packets and flooding packets
             return
-        # elif eth_dst == ETHERNET_MULTICAST:
+        elif is_multicast(eth_dst):
             # Streaming
-            # self.send_event_to_observers(Event_Streaming_PacketIn(msg, decoded_pkt))
+            print "Streaming"
+            self.send_event_to_observers(Event_Streaming_PacketIn(msg, pkt))
         else:
             # Switching
+            print "Switching"
             self.send_event_to_observers(Event_Switching_PacketIn(msg, pkt))
 
     def add_flow(self, datapath, priority, match, actions):

@@ -31,6 +31,9 @@ class Switching(app_manager.RyuApp):
     def reg_DPSet(self, dpset):
         self.dpset = dpset
 
+    def set_wrapper(self, wrapper):
+        self.wrapper = wrapper
+
     def enable_multipath(self):
         self.multipath = True
 
@@ -129,11 +132,29 @@ class Switching(app_manager.RyuApp):
         msg = ev.msg
         pkt = ev.pkt
 
-        dpid = msg.datapath.id
+        datapath = msg.datapath
+        ofproto = datapath.ofproto
+        parser = datapath.ofproto_parser
+        dpid = datapath.id
+        eth_src = pkt.get_protocol(ethernet.ethernet).src
         eth_dst = pkt.get_protocol(ethernet.ethernet).dst
+        in_port = msg.match["in_port"]
 
         if eth_dst not in self.hosts:
             self.logger.debug("%s has not been discovered" % eth_dst)
+            ports = self.wrapper.get_flood_ports()
+            for dpid, out_port in ports:
+                if (dpid, out_port) == (datapath.id, in_port):
+                    continue
+                self.logger.info("flood to port:%d:%d", dpid, out_port)
+                dp = self.dpset.get(dpid)
+                actions = [parser.OFPActionOutput(out_port)]
+                out = dp.ofproto_parser.OFPPacketOut(datapath=dp,
+                                                     buffer_id=dp.ofproto.OFP_NO_BUFFER,
+                                                     in_port=dp.ofproto.OFPP_CONTROLLER,
+                                                     actions=actions,
+                                                     data=msg.data)
+                dp.send_msg(out)
             return False
 
         host = self.hosts[eth_dst]
@@ -157,57 +178,57 @@ class Switching(app_manager.RyuApp):
                                   actions=actions,
                                   data=msg.data)
         datapath.send_msg(out)
-        self.logger.debug("flow{eth_dst:%s} created" % eth_dst)
+        self.logger.debug("flow{%s -> %s} created" % (eth_src, eth_dst))
         return True
 
     def create_flow(self, src_dpid, eth_dst, dst_dpid, dst_out_port):
-        if src_dpid == dst_dpid:
-            return
-
-        path = nx.shortest_path(self.graph, source=src_dpid, target=dst_dpid)
-
         flow_id = hash(eth_dst) % (2 ** 30)
         self.flows[flow_id] = []
         self.flow_to_links[flow_id] = set()
-        for i in xrange(len(path)-1):
-            out_port = self.link_outport[(path[i], path[i+1])]
-            self.add_switch_flow(flow_id, path[i], eth_dst, out_port)
-            src, dst = path[i], path[i+1]
-            if src > dst:
-                src, dst = dst, src
-            self.link_to_flows[(src, dst)].add(flow_id)
-            self.flow_to_links[flow_id].add((src, dst))
-        self.add_switch_flow(flow_id, dst_dpid, eth_dst, dst_out_port)
-
-    def create_mp_flow(self, src_dpid, eth_dst, dst_dpid, dst_out_port):
-        if src_dpid == dst_dpid:
-            return
-
-        paths = nx.all_shortest_paths(self.graph, source=src_dpid, target=dst_dpid)
-        paths = list(paths)
-        path_count = len(paths)
-        path_len = len(paths[0])
-
-        flow_id = hash(eth_dst) % (2 ** 30)
-        self.flows[flow_id] = []
-        self.flow_to_links[flow_id] = set()
-        for i in xrange(path_len-1):
-            rules = {}
-            # Aggregrate rules
-            for j in xrange(path_count):
-                out_ports = rules.setdefault(paths[j][i], set())
-                port = self.link_outport[(paths[j][i], paths[j][i+1])]
-                out_ports.add(port)
-                src, dst = paths[j][i], paths[j][i+1]
+        if src_dpid != dst_dpid:
+            path = nx.shortest_path(self.graph, source=src_dpid, target=dst_dpid)
+            for i in xrange(len(path)-1):
+                out_port = self.link_outport[(path[i], path[i+1])]
+                self.add_switch_flow(flow_id, path[i], eth_dst, out_port)
+                src, dst = path[i], path[i+1]
                 if src > dst:
                     src, dst = dst, src
                 self.link_to_flows[(src, dst)].add(flow_id)
                 self.flow_to_links[flow_id].add((src, dst))
-            for src_dpid in rules.keys():
-                if len(rules[src_dpid]) > 1:
-                    self.add_mp_switch_flow(flow_id, src_dpid, eth_dst, rules[src_dpid])
-                else:
-                    self.add_switch_flow(flow_id, src_dpid, eth_dst, rules[src_dpid].pop())
+        self.add_switch_flow(flow_id, dst_dpid, eth_dst, dst_out_port)
+
+    def create_mp_flow(self, src_dpid, eth_dst, dst_dpid, dst_out_port):
+        flow_id = hash(eth_dst) % (2 ** 30)
+        self.flows[flow_id] = []
+        self.flow_to_links[flow_id] = set()
+        if src_dpid != dst_dpid:
+            paths = nx.all_shortest_paths(self.graph, source=src_dpid, target=dst_dpid)
+            paths = list(paths)
+            path_count = len(paths)
+            path_len = len(paths[0])
+            for i in xrange(path_len-1):
+                rules = {}
+                # Aggregrate rules
+                for j in xrange(path_count):
+                    out_ports = rules.setdefault(paths[j][i], set())
+                    port = self.link_outport[(paths[j][i], paths[j][i+1])]
+                    out_ports.add(port)
+                    src, dst = paths[j][i], paths[j][i+1]
+                    if src > dst:
+                        src, dst = dst, src
+                    self.link_to_flows[(src, dst)].add(flow_id)
+                    self.flow_to_links[flow_id].add((src, dst))
+                for src_dpid in rules.keys():
+                    if len(rules[src_dpid]) > 1:
+                        self.add_mp_switch_flow(flow_id, 
+                                                src_dpid, 
+                                                eth_dst, 
+                                                rules[src_dpid])
+                    else:
+                        self.add_switch_flow(flow_id, 
+                                             src_dpid, 
+                                             eth_dst, 
+                                             rules[src_dpid].pop())
         self.add_switch_flow(flow_id, dst_dpid, eth_dst, dst_out_port)
 
     def add_switch_flow(self, flow_id, dpid, eth_dst, out_port):

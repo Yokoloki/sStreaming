@@ -391,6 +391,8 @@ var topo = {
     add_nodes: function (type, nodes) {
         if(type == "switch"){
             for (var i = 0; i < nodes.length; i++) {
+                // Ignore NAT switch
+                if (nodes[i].dpid == "0000000000ffffff") continue;
                 console.log("add switch: " + JSON.stringify(nodes[i]));
                 nodes[i].type = "switch";
                 if(!nodes[i].bandwidth) nodes[i].bandwidth = {};
