@@ -35,12 +35,13 @@ class Shortest_Path_Heuristic(object):
             branch = None
             dist = 2 ** 31
             for node in in_nodes:
-                for to_add in pending:
-                    if to_add in pathlens[node] and \
-                            pathlens[node][to_add] < dist:
-                                next_to_add = to_add
-                                branch = node
-                                dist = pathlens[node][to_add]
+                if node in pathlens:
+                    for to_add in pending:
+                        if to_add in pathlens[node] and \
+                                pathlens[node][to_add] < dist:
+                                    next_to_add = to_add
+                                    branch = node
+                                    dist = pathlens[node][to_add]
             if next_to_add is None:
                 print "Error: cannot build multicast tree"
                 return None, None

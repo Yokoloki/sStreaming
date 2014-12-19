@@ -233,6 +233,8 @@ class Switching(app_manager.RyuApp):
 
     def add_switch_flow(self, flow_id, dpid, eth_dst, out_port):
         datapath = self.dpset.get(dpid)
+        if datapath is None: 
+            return
         ofproto = datapath.ofproto
         parser = datapath.ofproto_parser
 
@@ -250,6 +252,8 @@ class Switching(app_manager.RyuApp):
 
     def add_mp_switch_flow(self, flow_id, dpid, eth_dst, out_ports):
         datapath = self.dpset.get(dpid)
+        if datapath is None: 
+            return
         ofproto = datapath.ofproto
         parser = datapath.ofproto_parser
 

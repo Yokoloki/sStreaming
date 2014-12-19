@@ -4,6 +4,7 @@ from ryu.base import app_manager
 from ryu.controller.handler import MAIN_DISPATCHER
 from ryu.controller.handler import set_ev_cls
 from ryu.ofproto import ofproto_v1_3
+from ryu.lib.packet import ethernet, ipv4
 
 from ryu.topology.event import *
 from events import *
@@ -15,7 +16,9 @@ DEFAULT_BANDWIDTH = 10
 class Streaming(app_manager.RyuApp):
     OFP_VERSIONS = [ofproto_v1_3.OFP_VERSION]
     _EVENTS = [EventHostStatChanged,
-               EventSwitchStatChanged]
+               EventSwitchStatChanged,
+               EventStreamSourceEnter,
+               EventStreamSourceLeave]
 
     def __init__(self, *args, **kwargs):
         super(Streaming, self).__init__(*args, **kwargs)
@@ -105,6 +108,9 @@ class Streaming(app_manager.RyuApp):
         if dpid in self.switch_table:
             del self.switch_table[dpid]
         self.update_paths()
+        for stream_id in self.streams:
+            if self.streams[stream_id]["src"]["dpid"] == dpid:
+                self.send_event_to_observers(EventStreamSourceLeave(stream_id))
         inf_streams = set()
         for (src, dst) in self.link_to_streams.keys():
             if (src == dpid) or (dst == dpid):
@@ -150,6 +156,7 @@ class Streaming(app_manager.RyuApp):
 
     @set_ev_cls(EventStreamSourceEnter)
     def _source_enter_handler(self, ev):
+        self.logger.info("EventStreamSourceEnter")
         stream_id = ev.stream_id
         if stream_id in self.streams:
             self.logger.info("source of stream%d already exist", stream_id)
@@ -176,8 +183,8 @@ class Streaming(app_manager.RyuApp):
             return False
         m_tree = self.streams[ev.stream_id]["m_tree"]
         # Clean up
-        for dpid, stat in m_tree.items():
-            self.mod_stream_flow(dpid, stream_id, stat, None)
+        for dpid in m_tree.keys():
+            self.mod_stream_flow(dpid, stream_id, None)
             self.update_switch_table(dpid, "del", stream_id)
         for link in self.streams[stream_id]["links"]:
             if link in self.link_to_streams:
@@ -220,10 +227,12 @@ class Streaming(app_manager.RyuApp):
         stream_id = ev.stream_id
         dpid = ev.dpid
         bandwidth = ev.bandwidth
+        curr_stat = self.streams[stream_id]["m_tree"].get(dpid)
+        # self.mod_stream_flow(dpid, stream_id, curr_stat, bandwidth)
         self.streams[stream_id]["bandwidth"][dpid] = bandwidth
         self.update_topology(stream_id)
 
-    @set_ev_cls(EventPacketIn, MAIN_DISPATCHER)
+    @set_ev_cls(Event_Streaming_PacketIn, MAIN_DISPATCHER)
     def _streaming_handler(self, ev):
         msg = ev.msg
         pkt = ev.pkt
@@ -238,7 +247,7 @@ class Streaming(app_manager.RyuApp):
         if stream_id not in self.streams:
             self.logger.info("reg stream%d through packets", stream_id)
             self.send_event_to_observers(\
-                    EventStreamSourceEnter(stream_id, src_eth, dpid, in_port))
+                    EventStreamSourceEnter(stream_id, eth_src, dpid, in_port))
             return True
         if dpid not in self.streams[stream_id]["m_tree"]:
             self.logger.info("packet of stream %d is not "
@@ -247,10 +256,12 @@ class Streaming(app_manager.RyuApp):
             return False
 
         flow = self.streams[stream_id]["m_tree"][dpid]
-        if in_port != flow["in_port"]:
+        if in_port != flow.get("in_port"):
             self.logger.info("packet of stream%d is supposed "
-                             "to recv from %d:%d, not %d:%d",
-                             stream_id, dpid, flow["in_port"], dpid, in_port)
+                             "to recv from %s:%s, not %s:%s",
+                             stream_id,
+                             dpid, flow.get("in_port"),
+                             dpid, in_port)
             return False
         self.logger.info("flow of stream%d is not installed properly",
                          stream_id)
@@ -284,10 +295,9 @@ class Streaming(app_manager.RyuApp):
                 self.failed_streams.remove(stream_id)
 
         for dpid in mod_dpids:
-            prev_stat = self.streams[stream_id]["m_tree"].get(dpid)
-            curr_stat = new_tree.get(dpid)
-            self.mod_stream_flow(dpid, stream_id, prev_stat, curr_stat)
-            if curr_stat is None:
+            new_stat = new_tree.get(dpid)
+            self.mod_stream_flow(dpid, stream_id, new_stat)
+            if new_stat is None:
                 self.update_switch_table(dpid, "del", stream_id)
         for dpid, stat in new_tree.items():
             if stat["parent"] != -1:
@@ -299,13 +309,16 @@ class Streaming(app_manager.RyuApp):
         self.streams[stream_id]["m_tree"] = new_tree
         self.update_topology(stream_id)
 
-    def mod_stream_flow(self, dpid, stream_id, prev_stat, curr_stat):
+    def mod_stream_flow(self, dpid, stream_id, new_stat, new_band=None):
         datapath = self.dpset.get(dpid)
+        if datapath is None: return
         ofproto = datapath.ofproto
         parser = datapath.ofproto_parser
         if datapath is None:
             return False
 
+        prev_stat = self.streams[stream_id]["m_tree"].get(dpid)
+        # prev_band = self.streams[stream_id]["bandwidth"].get(dpid)
         if prev_stat is not None:
             if self.streams[stream_id]["src"]["dpid"] == dpid:
                 prev_in_port = self.streams[stream_id]["src"]["in_port"]
@@ -313,13 +326,16 @@ class Streaming(app_manager.RyuApp):
                 prev_in_port = self.link_outport.get((dpid, prev_stat["parent"]), -1)
             prev_out_ports = map(lambda c: self.link_outport[(dpid, c)],\
                     prev_stat["children"])
-        if curr_stat is not None:
+        if new_stat is not None:
             if self.streams[stream_id]["src"]["dpid"] == dpid:
                 curr_in_port = self.streams[stream_id]["src"]["in_port"]
             else:
-                curr_in_port = self.link_outport.get((dpid, curr_stat["parent"]), -1)
+                curr_in_port = self.link_outport.get((dpid, new_stat["parent"]), -1)
             curr_out_ports = map(lambda c: self.link_outport[(dpid, c)],\
-                    curr_stat["children"])
+                    new_stat["children"])
+            if dpid in self.streams[stream_id]["clients"]:
+                for port in self.streams[stream_id]["clients"][dpid]:
+                    curr_out_ports.append(port)
 
         if prev_stat is not None and len(prev_out_ports) != 0:
             # Del existing group
@@ -329,7 +345,7 @@ class Streaming(app_manager.RyuApp):
                                       group_id=stream_id)
             datapath.send_msg(gmod)
 
-        if curr_stat is not None and len(curr_out_ports) != 0:
+        if new_stat is not None and len(curr_out_ports) != 0:
             # Add new group
             buckets = []
             for port in curr_out_ports:
@@ -348,6 +364,21 @@ class Streaming(app_manager.RyuApp):
                                       buckets=buckets)
             datapath.send_msg(gmod)
 
+        # if prev_band is not None:
+        #     mmod = parser.OFPMeterMod(datapath=datapath,
+        #                               command=ofproto.OFPMC_DELETE,
+        #                               meter_id=stream_id)
+        #     datapath.send_msg(mmod)
+
+        # if new_band is not None:
+        #     bands = [parser.OFPMeterBandDrop(rate=new_band*1000)]
+        #     mmod = parser.OFPMeterMod(datapath=datapath,
+        #                               command=ofproto.OFPMC_ADD,
+        #                               flags=ofproto.OFPMF_KBPS,
+        #                               meter_id=stream_id,
+        #                               bands=bands)
+        #     datapath.send_msg(mmod)
+
         if prev_stat is not None:
             # Del first
             out_port = ofproto.OFPP_ANY
@@ -364,7 +395,7 @@ class Streaming(app_manager.RyuApp):
                                     instructions=[])
             datapath.send_msg(mod)
 
-        if curr_stat is not None:
+        if new_stat is not None:
             # Add new flow
             priority = 5
             eth_dst = self.streams[stream_id]["eth_dst"]
@@ -373,14 +404,16 @@ class Streaming(app_manager.RyuApp):
             if len(curr_out_ports) != 0:
                 actions.append(parser.OFPActionGroup(stream_id,
                                                      ofproto.OFPGT_ALL))
-            inst = [parser.OFPInstructionActions(ofproto.OFPIT_APPLY_ACTIONS,
-                                                 actions)]
+            inst = []
+            # if new_band is not None:
+            #     inst.append(parser.OFPInstructionMeter(meter_id=stream_id))
+            inst.append(parser.OFPInstructionActions(ofproto.OFPIT_APPLY_ACTIONS,
+                                                     actions))
             mod = parser.OFPFlowMod(datapath=datapath,
                                     priority=priority,
                                     match=match,
                                     instructions=inst)
             datapath.send_msg(mod)
-
         return True
 
     def update_topology(self, stream_id):
@@ -411,6 +444,8 @@ class Streaming(app_manager.RyuApp):
                                      self.host_table[mac]["receving"]))
 
     def update_switch_table(self, dpid, op, stream_id, dist=-1, bw=-1):
+        if dpid not in self.switch_table:
+            return
         send_event = True
         if op == "add":
             if stream_id in self.switch_table[dpid]:

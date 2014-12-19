@@ -185,7 +185,8 @@ class Wrapper(app_manager.RyuApp):
         if eth_dst == LLDP:
             return
 
-        if eth_src not in self.hostmac[datapath.id]:
+        hosts = self.hostmac.get(datapath.id)
+        if hosts is not None and eth_src not in hosts:
             src_ip = None
             if arp_protocol is not None:
                 src_ip = arp_protocol.src_ip
@@ -193,7 +194,7 @@ class Wrapper(app_manager.RyuApp):
                 src_ip = ip_protocol.src
             if src_ip is not None:
                 print "disc ip%s mac%s" % (src_ip, eth_src)
-                self.hostmac[datapath.id].add(eth_src)
+                hosts.add(eth_src)
                 host = Host(eth_src, src_ip, datapath.id, in_port)
                 self.send_event_to_observers(EventHostReg(host))
  

@@ -37,7 +37,7 @@ class TopoBuilder(object):
         self.hosts = {}
         self.as_map = {}
         self.ext_switches = set()
-        self.inn_net = "172.18.%d.%d/16"
+        self.inn_net = "192.18.%d.%d/16"
         self.ext_net = "10.1.%d.%d/16"
         self.ext_gw = "10.1.255.254/16"
 
@@ -171,6 +171,7 @@ class TopoBuilder(object):
         for host in self.hosts.values():
             host.cmd("sysctl net.ipv6.conf.all.disable_ipv6=1")
             host.cmd("sysctl net.ipv4.icmp_echo_ignore_broadcasts=0")
+            host.cmd("route add -net 224.1.0.0/16 %s-eth0" % str(host))
             if self.ext_access:
                 host.cmd("ip route fulsh root 0/0")
                 host.cmd("route add default gw", self.ext_gw.split("/")[0])
