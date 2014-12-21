@@ -189,9 +189,11 @@ class Streaming(app_manager.RyuApp):
         for link in self.streams[stream_id]["links"]:
             if link in self.link_to_streams:
                 self.link_to_streams[link].discard(stream_id)
-        for dpid, port in self.streams[ev.stream_id]["clients"].items():
-            mac = self.port_to_host[dpid][port]
-            self.update_host_table(mac, "del", "receving", stream_id)
+        for dpid, ports in self.streams[ev.stream_id]["clients"].items():
+            if dpid not in self.port_to_host: continue
+            for port in ports:
+                mac = self.port_to_host[dpid][port]
+                self.update_host_table(mac, "del", "receving", stream_id)
         self.update_host_table(ev.src_mac, "del", "sourcing", stream_id)
         del self.streams[stream_id]
 
@@ -228,7 +230,7 @@ class Streaming(app_manager.RyuApp):
         dpid = ev.dpid
         bandwidth = ev.bandwidth
         curr_stat = self.streams[stream_id]["m_tree"].get(dpid)
-        # self.mod_stream_flow(dpid, stream_id, curr_stat, bandwidth)
+        self.mod_stream_flow(dpid, stream_id, curr_stat, bandwidth)
         self.streams[stream_id]["bandwidth"][dpid] = bandwidth
         self.update_topology(stream_id)
 
@@ -318,7 +320,7 @@ class Streaming(app_manager.RyuApp):
             return False
 
         prev_stat = self.streams[stream_id]["m_tree"].get(dpid)
-        # prev_band = self.streams[stream_id]["bandwidth"].get(dpid)
+        prev_band = self.streams[stream_id]["bandwidth"].get(dpid)
         if prev_stat is not None:
             if self.streams[stream_id]["src"]["dpid"] == dpid:
                 prev_in_port = self.streams[stream_id]["src"]["in_port"]
@@ -364,20 +366,20 @@ class Streaming(app_manager.RyuApp):
                                       buckets=buckets)
             datapath.send_msg(gmod)
 
-        # if prev_band is not None:
-        #     mmod = parser.OFPMeterMod(datapath=datapath,
-        #                               command=ofproto.OFPMC_DELETE,
-        #                               meter_id=stream_id)
-        #     datapath.send_msg(mmod)
+        if prev_band is not None:
+            mmod = parser.OFPMeterMod(datapath=datapath,
+                                      command=ofproto.OFPMC_DELETE,
+                                      meter_id=stream_id)
+            datapath.send_msg(mmod)
 
-        # if new_band is not None:
-        #     bands = [parser.OFPMeterBandDrop(rate=new_band*1000)]
-        #     mmod = parser.OFPMeterMod(datapath=datapath,
-        #                               command=ofproto.OFPMC_ADD,
-        #                               flags=ofproto.OFPMF_KBPS,
-        #                               meter_id=stream_id,
-        #                               bands=bands)
-        #     datapath.send_msg(mmod)
+        if new_band is not None:
+            bands = [parser.OFPMeterBandDrop(rate=new_band*1000)]
+            mmod = parser.OFPMeterMod(datapath=datapath,
+                                      command=ofproto.OFPMC_ADD,
+                                      flags=ofproto.OFPMF_KBPS,
+                                      meter_id=stream_id,
+                                      bands=bands)
+            datapath.send_msg(mmod)
 
         if prev_stat is not None:
             # Del first
@@ -405,8 +407,8 @@ class Streaming(app_manager.RyuApp):
                 actions.append(parser.OFPActionGroup(stream_id,
                                                      ofproto.OFPGT_ALL))
             inst = []
-            # if new_band is not None:
-            #     inst.append(parser.OFPInstructionMeter(meter_id=stream_id))
+            if new_band is not None:
+                inst.append(parser.OFPInstructionMeter(meter_id=stream_id))
             inst.append(parser.OFPInstructionActions(ofproto.OFPIT_APPLY_ACTIONS,
                                                      actions))
             mod = parser.OFPFlowMod(datapath=datapath,

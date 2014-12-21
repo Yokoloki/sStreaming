@@ -20,9 +20,9 @@
         {"id": 2, "type": "inn", "as": 1},
         {"id": 3, "type": "inn", "as": 1},
         {"id": 4, "type": "inn", "as": 1},
-        {"id": 5, "type": "inn", "as": 1},
-        {"id": 6, "type": "inn", "as": 1},
-        {"id": 7, "type": "ext", "as": 1}
+        {"id": 5, "type": "ext", "as": 1},
+        {"id": 6, "type": "ext", "as": 1},
+        {"id": 7, "type": "inn", "as": 1}
     ],
     "links": [
         {"src": 1, "dst": 2},

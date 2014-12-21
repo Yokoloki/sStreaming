@@ -6,7 +6,7 @@ import random
 
 from mininet.net import Mininet
 from mininet.link import TCLink
-from mininet.node import RemoteController, Switch, OVSSwitch, Node
+from mininet.node import RemoteController, Switch, UserSwitch, OVSSwitch, Node
 from mininet.cli import CLI
 from mininet.log import setLogLevel, info
 
@@ -104,7 +104,7 @@ class TopoBuilder(object):
                             hex_mac[6:8],
                             hex_mac[8:10],
                             hex_mac[10:12]])
-            switch = self.net.addSwitch(name, dpid=mac, cls=OVSSwitch, protocols="OpenFlow13")
+            switch = self.net.addSwitch(name, dpid=mac, cls=UserSwitch, protocols="OpenFlow13")
             self.as_map[str(switch)] = node_info["as"]
             if node_info["type"] == "ext":
                 self.ext_switches.add(node_info["id"])

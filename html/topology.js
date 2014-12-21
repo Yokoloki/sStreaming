@@ -167,6 +167,7 @@ function update_console(){
                 "class": "form-control",
                 "id": "stream_id_select"
             });
+            select.append("option").text("");
             for(var i=0; i<streams.ids.length; i++){
                 select.append("option").text("Stream"+streams.ids[i]);
             }
@@ -186,6 +187,7 @@ function update_console(){
                 "class": "form-control",
                 "id": "stream_id_select"
             })
+            id_select.append("option").text("");
             for(var i=0; i<streams.ids.length; i++){
                 id_select.append("option").text("Stream"+streams.ids[i]);
             }
@@ -193,9 +195,10 @@ function update_console(){
                 "class": "form-control",
                 "id": "bandwidth_select"
             });
-            pri_select.append("option").text("Low");
-            pri_select.append("option").text("Mid");
-            pri_select.append("option").text("High");
+            pri_select.append("option").text("");
+            for(var i=0; i<10; i++){
+                pri_select.append("option").text((10-i)+"M");
+            }
 
             _list_add_entry(pri_ul, "button", {
                 "type": "button",
@@ -267,7 +270,8 @@ function _post_receive_from_request() {
         "dpid": elem.dragging.dpid,
         "port_no": elem.dragging.port_no
     };
-    idx = elem.console.select("#stream_id_select").property("selectedIndex");
+    idx = elem.console.select("#stream_id_select").property("selectedIndex")-1;
+    if(idx < 0) return;
     data.stream_id = Number(streams.ids[idx]);
     d3.json("/streaming/receive_from")
       .post(JSON.stringify(data), function(error, data){
@@ -282,10 +286,12 @@ function _post_bandwidth_change_request() {
     var data = {
         "dpid": elem.dragging.dpid
     };
-    stream_idx = elem.console.select("#stream_id_select").property("selectedIndex");
+    stream_idx = elem.console.select("#stream_id_select").property("selectedIndex")-1;
+    if(stream_idx < 0) return;
     data.stream_id = Number(streams.ids[stream_idx]);
     bandwidth_idx = elem.console.select("#bandwidth_select").property("selectedIndex");
-    data.bandwidth = 1 + bandwidth_idx * 4;
+    if(bandwidth_idx == 0) return;
+    data.bandwidth = 11 - bandwidth_idx;
     console.log(JSON.stringify(data));
     d3.json("/streaming/bandwidth_change")
       .post(JSON.stringify(data), function(error, data){

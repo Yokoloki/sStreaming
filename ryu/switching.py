@@ -261,7 +261,8 @@ class Switching(app_manager.RyuApp):
         buckets = []
         for port in out_ports:
             actions = [parser.OFPActionOutput(port)]
-            buckets.append(parser.OFPBucket(actions=actions))
+            buckets.append(parser.OFPBucket(weight=1,
+                                            actions=actions))
 
         gmod = parser.OFPGroupMod(datapath=datapath,
                                   command=ofproto.OFPGC_ADD,

@@ -23,6 +23,7 @@ from events import *
 from addrs import *
 
 cfg.CONF.observe_links = True
+cfg.CONF.explicit_drop = False
 
 
 class Wrapper(app_manager.RyuApp):
