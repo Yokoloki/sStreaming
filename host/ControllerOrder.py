@@ -4,7 +4,7 @@ import logging
 from eventlet import greenthread
 
 BUFF_SIZE = 1024
-SOCKET_SLEEP_TIME = 0.5
+SOCKET_SLEEP_TIME = 0.7
 
 #logging set up
 formatter = logging.Formatter('%(asctime)s - %(levelname)s: [line%(lineno)d - %(message)s]')
@@ -77,11 +77,10 @@ def generateAndSendNewStream(order, clientSocket, threadMap):
     while True:
         if order.period != 0 & time_slot > order.period:
             break
-        startTime = time.clock()
         time_slot += 1
 
         time_slice = 50
-        time_sleep = SOCKET_SLEEP_TIME - 0.01 * len(threadMap)
+        time_sleep = SOCKET_SLEEP_TIME
         time_interval = order.bitrate / time_slice
 
         for j in range(order.bitrate):

@@ -1,11 +1,12 @@
 import socket
 import struct
 import eventlet
+import logging
 from eventlet import greenthread
 
 BUFF_SIZE = 1024
-WINDOW_SIZE = 100
-PRINT_F = 5.0
+WINDOW_SIZE = 500
+PRINT_F = 1.0
 PERCENT_SYMBLE = '%'
 
 struct1 = struct.Struct('2q6i984s')
@@ -14,9 +15,10 @@ flow_map = {}
 
 
 class LiveStream(object):
-	currentBuffer = []				#The packet buffer
-	__currentReceivedPacket = []
-	currentLossCount = 0L			#
+	window_begin = 0L
+	window_end = 0L
+	__RECBuffer = []
+	currentLossCount = 0L
 	totalLossCount = 0L
 	currentBlock_id = 0L
 	remainPacket = 0L
@@ -26,43 +28,64 @@ class LiveStream(object):
 	__currentJitter = 0.0
 
 	def __init__(self, flow_id, remainPacket):
-		self.__currentReceivedPacket = []
-		currentBuffer = []
+		self.__RECBuffer = []
 		self.flow_id = flow_id
 		self.remainPacket = remainPacket
 
-	def calPacketLoss(self):
-		if self.currentBlock_id in self.currentBuffer:
-			self.__currentReceivedPacket.append(self.currentBlock_id)
+	def setWindow(self, window_begin):
+		self.window_begin = window_begin
+		self.window_end = self.window_begin + WINDOW_SIZE
 
+	def __setRECBuffer(self):
+		for i in range(self.window_begin, self.window_end + 1):
+			if i in self.__RECBuffer:
+				self.__RECBuffer.remove(i)
+			else:
+				self.setWindow(window_begin = i)
+				break
+
+	#to be continued, because the function need to be optimised
+	def calPacketLoss(self):
+		if self.currentBlock_id < self.window_end:
+			self.__RECBuffer.append(self.currentBlock_id)
+			self.__setRECBuffer()
+			if self.currentBlock_id != self.window_begin:
+				myLoggging.info('flow_id: %d packet disordering, block_id: %d'%(self.flow_id, 
+					self.currentBlock_id))
+			
 			return
 		else:
-			if self.currentBlock_id == self.currentBuffer[-1] + 1:
-				if len(self.__currentReceivedPacket) == WINDOW_SIZE:
-					self.currentBuffer = range(self.currentBlock_id, 
-					self.currentBlock_id + WINDOW_SIZE)
-					self.__currentReceivedPacket = []
-					self.__currentReceivedPacket.append(self.currentBlock_id)
-					return
-			
-			threshold = self.currentBlock_id - self.currentBuffer[WINDOW_SIZE/2] + self.currentBuffer[0]
-			previousBuffer = range(self.currentBuffer[0], threshold + 1)
-			self.currentBuffer = range(threshold, threshold + WINDOW_SIZE)
+			lossPackets = 0
+			old_window_begin = self.window_begin
+			old_window_end = self.window_end
 
-			lossPackets = self.currentBlock_id - self.currentBuffer[0] + 1
+			new_window_begin = self.currentBlock_id - WINDOW_SIZE + 1
+			self.setWindow(new_window_begin)
+			self.__RECBuffer.append(self.currentBlock_id)
+			self.__setRECBuffer()
 
-			for i in previousBuffer:
-				if i in self.__currentReceivedPacket:
-					lossPackets -= 1
-					self.__currentReceivedPacket.remove(i)
-				else:
-					myLoggging.info('flow_id: %d loss packet, block_id: %d'%(self.flow_id, i))
+			if new_window_begin < old_window_end:
+				for i in range(old_window_begin, new_window_begin):
+					if i not in self.__RECBuffer:
+						myLoggging.info('flow_id: %d loss packet, block_id: %d'%(self.flow_id, i))
+						lossPackets += 1
+					else:
+						self.__RECBuffer.remove(i)
+			else:
+				for i in range(old_window_begin, old_window_end):
+					if i not in self.__RECBuffer:
+						myLoggging.info('flow_id: %d loss packet, block_id: %d'%(self.flow_id, i))
+						lossPackets += 1
+					else:
+						self.__RECBuffer.remove(i)
+
+				lossPackets += new_window_begin - old_window_begin
+				myLoggging.info('flow_id: %d loss packet, block_id: [%d, %d]'%(self.flow_id, 
+					new_window_begin, old_window_begin - 1))
 
 			self.currentLossCount += lossPackets
 			self.totalLossCount += lossPackets
-			
-			
-
+						
 	def __setCurrentPacketLossRate(self):
 		self.__currentPacketLossRate = self.currentLossCount / (self.__currentBitrate * PRINT_F) * 100
 
@@ -107,11 +130,12 @@ def printThread(liveStream):
 			liveStream.getCurrentJitter(previousBitrate), 
 			liveStream.getCurrentPacketLossRate(), 
 			PERCENT_SYMBLE)
+		print liveStream.totalLossCount
  
 if __name__ == '__main__':
 	#setup logging
 	formatter = logging.Formatter('%(asctime)s - %(levelname)s: [line%(lineno)d - %(message)s]')
-	ip = ''
+	ip = 'test'
 	fileHandler = logging.FileHandler('../log/%s.log'%ip)
 	fileHandler.setFormatter(formatter)
 
@@ -140,7 +164,7 @@ if __name__ == '__main__':
 			else:
 				liveStream = LiveStream(flow_id, remainPacket)
 				liveStream.currentBlock_id = block_id
-				liveStream.currentBuffer = range(block_id + 1, block_id + WINDOW_SIZE + 1)
+				liveStream.setWindow(window_begin = block_id + 1)
 
 				thread = pool.spawn(printThread, liveStream)
 

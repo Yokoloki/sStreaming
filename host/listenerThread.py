@@ -16,7 +16,7 @@ if __name__ == "__main__":
 
     listener = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     listener.bind(("", listenerPort))
-    listener.settimeout(SOCKET_SLEEP_TIME)
+    listener.settimeout(1 - SOCKET_SLEEP_TIME)
 
     pool = eventlet.GreenPool(10000)
 
@@ -61,13 +61,9 @@ if __name__ == "__main__":
             greenThread = pool.spawn(generateAndSendNewStream, order, clientSocket, threadMap)
             
             #And put the greenThread into the map
-            threadMap[order.flow_id] = greenThread
-
-            #greenthread.sleep(0)
-            
+            threadMap[order.flow_id] = greenThread        
         except socket.timeout:
             print 'socket time out'
-            #greenthread.sleep(0)
         except (SystemExit, KeyboardInterrupt):
             print 'error'
             listener.close()
