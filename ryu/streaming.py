@@ -298,7 +298,8 @@ class Streaming(app_manager.RyuApp):
 
         for dpid in mod_dpids:
             new_stat = new_tree.get(dpid)
-            self.mod_stream_flow(dpid, stream_id, new_stat)
+            curr_band = self.streams[stream_id]["bandwidth"].get(dpid)
+            self.mod_stream_flow(dpid, stream_id, new_stat, curr_band)
             if new_stat is None:
                 self.update_switch_table(dpid, "del", stream_id)
         for dpid, stat in new_tree.items():
