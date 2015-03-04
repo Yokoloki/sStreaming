@@ -72,6 +72,12 @@ streams.setup_menu = function(idx){
     this.menu.property("selectedIndex", idx+1);
 }
 
+streams.get_files = function(){
+    d3.json("/streaming/files", function(error, files) {
+        streams.files = files;
+    });
+}
+
 function _menu_select_changed() {
     var idx = streams.menu.property("selectedIndex");
     data = streams.menu.selectAll("option")[0][idx].text;
@@ -153,6 +159,13 @@ function update_console(){
             "id": "stream_id_input",
             "placeholder": "Stream_id[1, 65535]"
         });
+        file_select = _list_add_entry(src_list, "select", {
+            "class": "form-control",
+            "id": "stream_file_select"
+        });
+        for(var i=0; i<streams.files.length; i++){
+            file_select.append("option").text(streams.files[i]);
+        }
         btn = _list_add_entry(src_list, "button", {
             "type": "button",
             "class": "btn btn-default"
@@ -230,6 +243,7 @@ function _post_source_for_request() {
         "port_no": elem.dragging.port_no
     };
     data.stream_id = Number(elem.console.select("#stream_id_input").property("value"));
+    data.fname = streams.files[elem.console.select("#stream_file_select").property("selectedIndex")];
     existed = false;
     for(var i=0; i<streams.ids.length; i++){
         if(streams.ids[i] == data.stream_id){
@@ -240,6 +254,14 @@ function _post_source_for_request() {
     ul = elem.console.select("#source_for_ul");
     div = ul.select("div");
     if(div) div.remove();
+    if(data.stream_id == 0){
+        ul.select("li").insert("div", "input");
+        ul.select("div").attr("class", "alert alert-warning")
+                        .attr("align", "left")
+                        .attr("role", "alert")
+                        .text("Warning: empty  input");
+        return;
+    }
     if(existed){
         ul.select("li").insert("div", "input");
         ul.select("div").attr("class", "alert alert-warning")
@@ -698,6 +720,7 @@ function initialize_topology() {
                     topo.initialize({switches: switches, links: links, hosts: hosts});
                     elem.update();
                     streams.setup_menu();
+                    streams.get_files();
                 });
             });
         });

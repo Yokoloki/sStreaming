@@ -3,12 +3,16 @@ import json
 import pymongo
 import re
 import random
+import threading
+import socket
 
 from mininet.net import Mininet
 from mininet.link import TCLink
 from mininet.node import RemoteController, Switch, UserSwitch, OVSSwitch, Node
 from mininet.cli import CLI
 from mininet.log import setLogLevel, info
+
+from rpc import RPC
 
 
 def parseJSON(args):
@@ -176,6 +180,16 @@ class TopoBuilder(object):
                 host.cmd("ip route fulsh root 0/0")
                 host.cmd("route add default gw", self.ext_gw.split("/")[0])
 
+    def pre_config(self):
+        info("*** Pre configs\n")
+        if "pre_conf" in self.topo:
+            for conf in self.topo["pre_conf"]:
+                match = re.match("^h(\d+) ", conf)
+                if match:
+                    host_id = int(match.group(1))
+                    cmd = conf[conf.find(" ")+1:]
+                    if host_id in self.hosts:
+                        self.hosts[host_id].cmd(cmd)
 
     def start_nat(self, inetIntf="em1", subnet="10.1.0.0/16"):
         localIntf = self.nat_root.defaultIntf()
@@ -237,12 +251,51 @@ class TopoBuilder(object):
             self.start_nat()
 
         self.config_hosts()
+        self.pre_config()
+        t = ryuThread(self.net, 9999)
+        t.start()
         CLI(self.net)
 
         info("*** Stopping network\n")
+        t.stop()
         if self.ext_access:
             self.stop_nat()
         self.net.stop()
+
+
+class ryuThread(threading.Thread):
+    def __init__(self, mininet, port):
+        threading.Thread.__init__(self)
+        self.port = port
+        self.rpc = RPC(mininet)
+        self.running = True
+
+    def run(self):
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.bind(('', self.port))
+        sock.settimeout(1)
+        sock.listen(0)
+        while self.running:
+            try:
+                s, addr = sock.accept()
+            except socket.timeout:
+                continue
+            s.settimeout(1)
+            while self.running:
+                try:
+                    data = s.recv(1024)
+                except socket.timeout:
+                    continue
+                if not data:
+                    s.close()
+                    break
+                pid = self.rpc.onecmd(data)
+                s.send("%s" % pid)
+        sock.close()
+
+    def stop(self):
+        self.running = False
+
 
 if __name__ == "__main__":
     setLogLevel("info")

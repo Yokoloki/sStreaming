@@ -1,4 +1,5 @@
 import logging
+import json
 
 from ryu import cfg
 from ryu.base import app_manager
@@ -24,6 +25,8 @@ from addrs import *
 
 cfg.CONF.observe_links = True
 cfg.CONF.explicit_drop = False
+cfg.CONF.wsapi_port = 80
+CONFIG_FILE = "config.json"
 
 
 class Wrapper(app_manager.RyuApp):
@@ -51,6 +54,11 @@ class Wrapper(app_manager.RyuApp):
         self._switching = kwargs["Switching"]
         self._streaming = kwargs["Streaming"]
         self._visual = kwargs["Visual"]
+
+        with file(CONFIG_FILE) as f:
+            conf = json.load(f)
+            for app in conf.keys():
+                kwargs[app].config(conf[app])
     
         self._arp_proxy.reg_DPSet(self.dpset)
         self._arp_proxy.set_wrapper(self)

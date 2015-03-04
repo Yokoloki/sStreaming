@@ -1,4 +1,9 @@
 import logging
+import os
+import socket
+from subprocess import Popen
+from random import randint
+
 import networkx as nx
 from ryu.base import app_manager
 from ryu.controller.handler import MAIN_DISPATCHER
@@ -12,7 +17,131 @@ from addrs import *
 from algorithms import *
 
 
-DEFAULT_BANDWIDTH = 10
+class MininetRPC(object):
+    def __init__(self, addr, port):
+        super(MininetRPC, self).__init__()
+        self.addr = addr
+        self.port = port
+        self.connected = False
+        self.connect()
+
+    def __del__(self):
+        self.sock.close()
+        super(MininetRPC, self).__del__()
+
+    def connect(self):
+        try:
+            self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.sock.connect((self.addr, self.port))
+            self.connected = True
+        except socket.error:
+            self.connected = False
+
+    def run(self, cmd):
+        if not self.connected:
+            self.connect()
+        if not self.connected:
+            return None
+        self.sock.send(cmd)
+        data = self.sock.recv(1024)
+        if data == "None":
+            return None
+        else:
+            return int(data)
+
+
+class ExtManager(object):
+    def __init__(self, addr, port, conf):
+        super(ExtManager, self).__init__()
+        self.rpc = MininetRPC(addr, port)
+        self.conf = conf
+        self.socat = {}
+        self.vlc = {}
+        self.using_port = {}
+        self.used_ports = set()
+        os.system("rm -rf %s" % (self.conf["dst_dir"]+"*"))
+
+    def __del__(self):
+        for stream_id in self.socat.keys():
+            self.del_stream(stream_id)
+        super(ExtManager, self).__del__()
+
+    def demote(self):
+        def result():
+            os.setgid(self.conf["gid"])
+            os.setuid(self.conf["uid"])
+        return result
+
+    def add_stream(self, stream_id, src_hid, fname):
+        self.socat[stream_id] = {}
+        self.vlc[stream_id] = {}
+        self.using_port[stream_id] = {}
+        # socat
+        port = 9000 + stream_id
+        maddr = "224.1.%d.%d" % (stream_id/256, stream_id%256)
+        host_cmd = "h%d socat UDP4-LISTEN:%d,reuseaddr,fork UDP:%s:%d &" \
+                   % (src_hid, port, maddr, port)
+        pid = self.rpc.run(host_cmd)
+        self.socat[stream_id][src_hid] = pid
+        # vlc
+        path = self.conf["src_dir"] + fname
+        uaddr = "10.1.%d.%d" % (src_hid/256, src_hid%256)
+        vlc_cmd = "cvlc %s " % (path)
+        vlc_cmd += "--file-caching %d " % (self.conf["file-cache"])
+        vlc_cmd += "--sout #rtp{dst=%s,port=%d,mux=ts} " % (uaddr, port)
+        vlc_cmd += "--sout-keep"
+        self.vlc[stream_id][src_hid] = Popen(vlc_cmd.split(), cwd="/", preexec_fn=self.demote())
+
+    def add_client(self, stream_id, hid, fname):
+        src_port = 9000 + stream_id
+        dst_port = 10000 + randint(0, 1000)
+        while dst_port in self.used_ports:
+            dst_port = 10000 + randint(0, 1000)
+        self.used_ports.add(dst_port)
+        self.using_port[stream_id][hid] = dst_port
+        # socat
+        host_cmd = "h%d socat UDP4-LISTEN:%d,reuseaddr,fork UDP:%s:%d &" \
+                   % (hid, src_port, self.conf["self_ip"], dst_port)
+        pid = self.rpc.run(host_cmd)
+        self.socat[stream_id][hid] = pid
+        # vlc
+        base = self.conf["dst_dir"] + "h%d" % (hid)
+        index = base + "/%s.m3u8" % ("stream")
+        index_url = "%s-########.ts" % ("stream")
+        dst = base + "/" + index_url
+        vlc_cmd = "cvlc rtp://@:%d " % (dst_port)
+        vlc_cmd += "--sout #std{"
+        vlc_cmd +="access=livehttp{"
+        vlc_cmd += "seglen=%d,delsegs=%s,numsegs=%d," \
+                   % (self.conf["seglen"], self.conf["delsegs"], self.conf["numsegs"])
+        vlc_cmd += "index=%s,index-url=%s}," % (index, index_url)
+        vlc_cmd += "mux=ts{use-key-frames},dst=%s}" % (dst)
+        Popen(["mkdir", base], cwd="/")
+        Popen(["chmod", "777", base], cwd="/")
+        self.vlc[stream_id][hid] = Popen(vlc_cmd.split(), cwd="/", preexec_fn=self.demote())
+
+    def del_stream(self, stream_id):
+        for hid in self.socat[stream_id].keys():
+            self.del_client(hid, stream_id)
+        del self.socat[stream_id]
+        del self.vlc[stream_id]
+        del self.using_port[stream_id]
+
+    def del_client(self, stream_id, hid):
+        # socat
+        host_cmd = "h%d kill -9 %d" % (hid, self.socat[stream_id][hid])
+        self.rpc.run(host_cmd)
+        # vlc
+        self.vlc[stream_id][hid].kill()
+        self.vlc[stream_id][hid].poll()
+        # release
+        if hid in self.using_port[stream_id]:
+            self.used_ports.discard(self.using_port[stream_id][hid])
+            del self.using_port[stream_id][hid]
+        del self.socat[stream_id][hid]
+        del self.vlc[stream_id][hid]
+
+
 class Streaming(app_manager.RyuApp):
     OFP_VERSIONS = [ofproto_v1_3.OFP_VERSION]
     _EVENTS = [EventHostStatChanged,
@@ -42,6 +171,7 @@ class Streaming(app_manager.RyuApp):
         # stream_id -> src{dpid, in_port}
         #              eth_dst
         #              ip_dst
+        #              fname
         #              rate
         #              clients{dpid->out_ports}
         #              m_tree{dpid->(parent, children)}
@@ -53,6 +183,15 @@ class Streaming(app_manager.RyuApp):
         # streams that fail to build due to topology change
         self.failed_streams = set()
         self.algorithm = Shortest_Path_Heuristic()
+    
+    def __del__(self):
+        for stream_id in self.streams.keys():
+            pass
+        super(Streaming, self).__del__()
+
+    def config(self, conf):
+        self.conf = conf
+        self.manager = ExtManager(conf["rpc_addr"], conf["rpc_port"], conf["vlc"])
 
     def reg_DPSet(self, dpset):
         self.dpset = dpset
@@ -110,7 +249,7 @@ class Streaming(app_manager.RyuApp):
         self.update_paths()
         for stream_id in self.streams:
             if self.streams[stream_id]["src"]["dpid"] == dpid:
-                self.send_event_to_observers(EventStreamSourceLeave(stream_id))
+                self._source_leave_handler(EventStreamSourceLeave(stream_id))
         inf_streams = set()
         for (src, dst) in self.link_to_streams.keys():
             if (src == dpid) or (dst == dpid):
@@ -164,6 +303,7 @@ class Streaming(app_manager.RyuApp):
         self.streams[stream_id] = {"rate": ev.rate,
                                    "eth_dst": ev.eth_dst,
                                    "ip_dst": ev.ip_dst,
+                                   "fname": ev.fname,
                                    "clients": {},
                                    "m_tree": {},
                                    "bandwidth": {},
@@ -173,6 +313,7 @@ class Streaming(app_manager.RyuApp):
                                           "in_port": ev.src_in_port}
         self.cal_flows_for_stream(stream_id, ev)
         self.update_host_table(ev.src_mac, "add", "sourcing", stream_id)
+        self.manager.add_stream(stream_id, ev.src_dpid, ev.fname)
 
     @set_ev_cls(EventStreamSourceLeave)
     def _source_leave_handler(self, ev):
@@ -181,7 +322,7 @@ class Streaming(app_manager.RyuApp):
             self.logger.info("source leaving a non-existing stream%d",
                              stream_id)
             return False
-        m_tree = self.streams[ev.stream_id]["m_tree"]
+        m_tree = self.streams[stream_id]["m_tree"]
         # Clean up
         for dpid in m_tree.keys():
             self.mod_stream_flow(dpid, stream_id, None)
@@ -194,7 +335,8 @@ class Streaming(app_manager.RyuApp):
             for port in ports:
                 mac = self.port_to_host[dpid][port]
                 self.update_host_table(mac, "del", "receving", stream_id)
-        self.update_host_table(ev.src_mac, "del", "sourcing", stream_id)
+        self.update_host_table(self.streams[stream_id]["src"]["mac"], "del", "sourcing", stream_id)
+        self.manager.del_stream(stream_id)
         del self.streams[stream_id]
 
     @set_ev_cls(EventStreamClientEnter)
@@ -209,6 +351,7 @@ class Streaming(app_manager.RyuApp):
         client_ports.add(ev.out_port)
         self.cal_flows_for_stream(stream_id, ev)
         self.update_host_table(ev.mac, "add", "receving", stream_id)
+        self.manager.add_client(stream_id, ev.dpid, self.streams[stream_id]["fname"])
 
     @set_ev_cls(EventStreamClientLeave)
     def _client_leave_handler(self, ev):
@@ -223,6 +366,7 @@ class Streaming(app_manager.RyuApp):
         if len(client_ports) == 0:
             del self.streams[stream_id]["clients"][ev.dpid]
         self.update_host_table(ev.mac, "del", "receving", stream_id)
+        self.manager.del_client(stream_id, ev.dpid)
 
     @set_ev_cls(EventStreamBandwidthChange)
     def _bandwidth_change_handler(self, ev):
@@ -430,8 +574,8 @@ class Streaming(app_manager.RyuApp):
             parent = m_tree[dpid]["parent"]
             children = m_tree[dpid]["children"]
             [stack.append((child, dist+1)) for child in children]
-            p_bw = bw_real.get(parent, DEFAULT_BANDWIDTH)
-            m_bw = bw_setting.get(dpid, DEFAULT_BANDWIDTH)
+            p_bw = bw_real.get(parent, self.conf["default_band"])
+            m_bw = bw_setting.get(dpid, self.conf["default_band"])
             bw_real[dpid] = min(p_bw, m_bw)
             self.update_switch_table(dpid, "add", stream_id, dist, bw_real[dpid])
         return bw_real

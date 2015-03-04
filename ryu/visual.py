@@ -32,6 +32,9 @@ class VisualServer(app_manager.RyuApp):
         self.rpc_clients = []
         self.logger.setLevel(logging.DEBUG)
 
+    def config(self, conf):
+        self.conf = conf
+
     def set_wrapper(self, wrapper):
         self.wrapper = wrapper
 
@@ -74,6 +77,12 @@ class VisualServer(app_manager.RyuApp):
                 hosts[i]["sourcing"] = list(host_stat[mac]["sourcing"])
                 hosts[i]["receving"] = list(host_stat[mac]["receving"])
         return hosts
+
+    def get_files(self):
+        files = filter(lambda x: x.rfind("ts") == len(x)-2, 
+                       os.listdir(self.conf["src_dir"]))
+        return files
+
 
     @set_ev_cls(EventSwitchEnter)
     def _event_switch_enter_handler(self, ev):
@@ -177,6 +186,12 @@ class StreamController(ControllerBase):
         super(StreamController, self).__init__(req, link, data, **config)
         self.visual_server = data["visual_server"]
 
+    @route("stream", "/streaming/files", methods=["GET"])
+    def _get_files(self, req, **kwargs):
+        files = self.visual_server.get_files()
+        body = json.dumps(files)
+        return Response(content_type="application/json", body=body)
+
     @route("stream", "/streaming/source_for", methods=["POST"])
     def _source_for_handler(self, req, **kwargs):
         try:
@@ -190,10 +205,11 @@ class StreamController(ControllerBase):
             dpid = str_to_dpid(data["dpid"])
             port_no = str_to_port_no(data["port_no"])
             stream_id = data["stream_id"]
+            fname = data["fname"]
         except KeyError, message:
             return Response(status=400, body=str(message))
         self.visual_server.send_event_to_observers(\
-                EventStreamSourceEnter(stream_id, mac, dpid, port_no))
+                EventStreamSourceEnter(stream_id, mac, dpid, port_no, fname))
         body = json.dumps({"stat": "succ"})
         return Response(content_type="application/json", body=body)
 

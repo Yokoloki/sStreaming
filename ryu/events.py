@@ -149,12 +149,13 @@ class EventHostStatChanged(event.EventBase):
 
 class EventStreamSourceEnter(event.EventBase):
 
-    def __init__(self, stream_id, src_mac, src_dpid, src_in_port, rate=100):
+    def __init__(self, stream_id, src_mac, src_dpid, src_in_port, fname, rate=100):
         super(EventStreamSourceEnter, self).__init__()
         self.stream_id = stream_id
         self.src_mac = src_mac
         self.src_dpid = src_dpid
         self.src_in_port = src_in_port
+        self.fname = fname
         self.rate = rate
         self.eth_dst = "01:00:5e:01:%02x:%02x" % (stream_id/256, stream_id%256)
         self.ip_dst = "225.1.%d.%d" % (stream_id/256, stream_id%256)
